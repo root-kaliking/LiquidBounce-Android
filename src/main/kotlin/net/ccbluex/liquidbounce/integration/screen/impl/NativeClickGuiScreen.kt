@@ -508,9 +508,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
                 is Action.ToggleBool -> {
                     val v = action.value
                     @Suppress("UNCHECKED_CAST")
-                    if (v is Value<Boolean>) {
-                        v.set(!v.get())
-                    }
+                    (v as Value<Boolean>).set(!v.get())
                 }
                 is Action.ToggleGroup -> action.value.enabled = !action.value.enabled
                 is Action.CycleMode -> cycleMode(action.group)
@@ -654,3 +652,4 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         is Double -> value.toFloat()
         else -> 0f
     }
+}
