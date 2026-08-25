@@ -238,7 +238,7 @@ class NativeClickGuiScreen : Screen(
         ModuleCategories.entries
             .filter { it.tag != "ClickGUI" }
             .forEachIndexed { index, category ->
-                panels[category] = PanelConfig(left = 20f, top = index * 50 + 20, expanded = false)
+                panels[category] = PanelConfig(left = 20f, top = (index * 50 + 20).toFloat(), expanded = false)
                 panelBodyAnim[category] = Animated(6f)
                 expandIconAnim[category] = Animated(5f)
             }
@@ -573,9 +573,9 @@ class NativeClickGuiScreen : Screen(
         val h = 12f
         switchAnim.getOrPut(key) { Animated(7f) }
         val progress = switchAnim[key]!!.value
-        val trackColor = switchTrack.interpolateTo(switchTrackActive, progress)
+        val trackColor = switchTrack.interpolateTo(switchTrackActive, progress.toDouble())
         drawQuad(centerX, centerY - 4f, centerX + w, centerY + 4f, trackColor)
-        val thumb = switchThumb.interpolateTo(switchThumbActive, progress)
+        val thumb = switchThumb.interpolateTo(switchThumbActive, progress.toDouble())
         val thumbCX = centerX + 6f + (w - 12f) * progress
         drawQuad(thumbCX - 6f, centerY - 6f, thumbCX + 6f, centerY + 6f, thumb)
     }
