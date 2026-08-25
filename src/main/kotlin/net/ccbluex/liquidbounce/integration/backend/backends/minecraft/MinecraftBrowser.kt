@@ -77,7 +77,12 @@ class MinecraftBrowser(
     }
 
     override var isInitialized: Boolean = true
-    override var state: BrowserState = BrowserState.Idle
+
+    // This backend never has a real "page load": the URL is handed to the OS
+    // browser immediately, so there is nothing to wait on. Report a completed
+    // state right away, otherwise [ScreenManager.waitUntilInitialized] waits
+    // its full 30s timeout and throws a fatal error on the render thread.
+    override var state: BrowserState = BrowserState.Success(200)
 
     override var url: String = url
         set(value) {
@@ -85,7 +90,7 @@ class MinecraftBrowser(
                 return
             }
             field = value
-            state = BrowserState.Idle
+            state = BrowserState.Success(200)
 
             // Truncate any forward history before pushing the new entry.
             while (history.size - 1 > historyIndex) {

@@ -37,6 +37,7 @@ import net.ccbluex.liquidbounce.features.misc.HideAppearance
 import net.ccbluex.liquidbounce.features.module.modules.render.ModuleClickGui
 import net.ccbluex.liquidbounce.features.module.modules.render.ModuleHud
 import net.ccbluex.liquidbounce.integration.backend.BrowserBackendManager
+import net.ccbluex.liquidbounce.integration.backend.isMobileArm64
 import net.ccbluex.liquidbounce.integration.backend.browser.Browser
 import net.ccbluex.liquidbounce.integration.backend.browser.BrowserState
 import net.ccbluex.liquidbounce.integration.backend.browser.GlobalBrowserSettings
@@ -334,6 +335,16 @@ object ScreenManager : EventListener {
      * @return should cancel the minecraft screen
      */
     private fun handleCurrentMinecraftScreen(minecraftScreen: Screen): Boolean {
+        // On ARM64 / mobile the integration browser has no on-screen texture, so the
+        // browser UI cannot be rendered in-game (it only opens URLs externally). Do not
+        // hijack vanilla screens (title, multiplayer, singleplayer, options, ...) with an
+        // invisible browser surface - that used to hang the whole client, e.g. when the
+        // multiplayer screen was wrapped. Render all vanilla screens natively instead.
+        if (isMobileArm64()) {
+            closeScreen()
+            return false
+        }
+
         val customScreenType = CustomScreenType.recognize(minecraftScreen)
         if (customScreenType == null) {
             closeScreen()
