@@ -60,7 +60,7 @@ import kotlin.math.roundToInt
  * and interaction directly with the Minecraft renderer, so pressing the [ModuleClickGui]
  * bind (right Shift) opens a fully usable configuration menu in-game.
  */
-@Suppress("TooManyFunctions", "MagicNumber")
+@Suppress("TooManyFunctions", "MagicNumber", "LongMethod", "MaxLineLength")
 class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
 
     // ---- Palette (mirrors src-theme/src/colors.scss) ----
@@ -161,7 +161,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
 
     private fun GuiGraphicsExtractor.renderScreen(w: Float, h: Float, mx: Float, my: Float) {
         drawQuad(0f, 0f, w, h, overlayBg)
-        renderSearchBox(w, mx, my)
+        renderSearchBox(w)
         renderTabs(w)
         renderPanels(mx, my)
     }
@@ -200,7 +200,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         }
     }
 
-    private fun GuiGraphicsExtractor.renderSearchBox(w: Float, mx: Float, my: Float) {
+    private fun GuiGraphicsExtractor.renderSearchBox(w: Float) {
         val sw = 360f
         val x1 = (w - sw) / 2f
         val x2 = (w + sw) / 2f
