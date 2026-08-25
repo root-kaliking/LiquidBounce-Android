@@ -38,6 +38,7 @@ import net.ccbluex.liquidbounce.integration.screen.CustomScreenType
 import net.ccbluex.liquidbounce.integration.screen.ScreenManager
 import net.ccbluex.liquidbounce.integration.screen.impl.CustomSharedMinecraftScreen
 import net.ccbluex.liquidbounce.integration.screen.impl.CustomStandaloneMinecraftScreen
+import net.ccbluex.liquidbounce.integration.screen.impl.NativeClickGuiScreen
 import net.ccbluex.liquidbounce.utils.client.inGame
 import net.ccbluex.liquidbounce.utils.kotlin.EventPriorityConvention.OBJECTION_AGAINST_EVERYTHING
 import net.ccbluex.liquidbounce.utils.kotlin.EventPriorityConvention.READ_FINAL_STATE
@@ -87,6 +88,18 @@ object ModuleClickGui :
                 EventManager.callEvent(ClickGuiValueChangeEvent(ModuleClickGui))
             }
         }
+
+        /**
+         * Whether grid snapping is enabled (used by the native ClickGUI).
+         */
+        val snappingGridEnabled: Boolean
+            get() = enabled
+
+        /**
+         * The grid size in pixels (used by the native ClickGUI).
+         */
+        val snappingGridSize: Int
+            get() = inner.find { it.name == "GridSize" }?.get() as? Int ?: 10
     }
 
     init {
@@ -111,9 +124,13 @@ object ModuleClickGui :
             return
         }
 
-        updateStandaloneScreen()
-        mc.execute {
-            mc.gui.setScreen(standaloneScreen ?: CustomSharedMinecraftScreen(CustomScreenType.CLICK_GUI))
+        // Open the native, in-game ClickGUI instead of the (CEF) browser one, which cannot
+        // render on ARM64 / Android. Right Shift opens the configuration menu directly.
+        val current = mc.gui.screen()
+        if (current is NativeClickGuiScreen) {
+            mc.execute { mc.gui.setScreen(null) }
+        } else {
+            mc.execute { mc.gui.setScreen(NativeClickGuiScreen()) }
         }
         super.onEnabled()
     }
