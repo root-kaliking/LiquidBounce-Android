@@ -478,51 +478,90 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
 
     // ================= Input =================
 
-    override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
-        if (click.button() != InputConstants.MOUSE_BUTTON_LEFT) {
-            return true
-        }
-        val mx = click.x.toFloat()
-        val my = click.y.toFloat()
-        val w = mc.window.guiScaledWidth.toFloat()
-        val sw = 360f
-        val searchX1 = (w - sw) / 2f
-        val searchX2 = (w + sw) / 2f
+    /**
+     * Converts a possibly-physical (unscaled) mouse coordinate to GUI scaled space.
+     * Android devices report raw pixel positions for pointer events while [regions]
+     * are laid out in `guiScaled` coordinates, so we normalise before hit-testing.
+     */
+    private val guiScaleX: Float
+        get() = mc.window.screenWidth.toFloat() / mc.window.guiScaledWidth.toFloat()
+    private val guiScaleY: Float
+        get() = mc.window.screenHeight.toFloat() / mc.window.guiScaledHeight.toFloat()
 
-        searchFocused = mx >= searchX1 && mx <= searchX2 && my >= tabY + 6f && my <= tabY + 42f
-        if (searchFocused) {
-            return true
-        }
+    /**
+     * Hit-tests a mouse position (possibly physical pixels) against the current
+     * frame's [regions] using both coordinate interpretations, and executes the
+     * matched [Region.action]. [triggered] reports whether anything handled the click.
+     */
+    private fun dispatchAction(x: Double, y: Double): Boolean {
+        val scrollHandledByX = x / guiScaleX
+        val scrollHandledByY = y / guiScaleY
 
+        // Coordinates may arrive either already-scaled or as physical pixels; try both.
         for (region in regions) {
-            if (!region.contains(mx, my)) {
+            val hitScaled = region.contains(scrollHandledByX.toFloat(), scrollHandledByY.toFloat()) ||
+                region.contains(x.toFloat(), y.toFloat())
+            if (!hitScaled) {
                 continue
             }
             when (val action = region.action) {
                 is Action.TogglePanel -> panels[action.category]?.let { it.collapsed = !it.collapsed }
                 is Action.ToggleModule -> action.module.enabled = !action.module.enabled
-                is Action.ExpandModule -> {
-                    val name = action.module.name
-                    if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
-                }
+                is Action.ExpandModule -> toggleExpanded(action.module)
                 is Action.ToggleBool -> {
-                    val v = action.value
                     @Suppress("UNCHECKED_CAST")
-                    (v as Value<Boolean>).set(!v.get())
+                    (action.value as Value<Boolean>).set(!action.value.get())
                 }
                 is Action.ToggleGroup -> action.value.enabled = !action.value.enabled
                 is Action.CycleMode -> cycleMode(action.group)
                 is Action.StartSlider -> draggingSlider = SliderDrag(action.value, action.x1, action.x2)
                 null -> Unit
             }
-            break
+            return true
         }
+        return false
+    }
+
+    private fun toggleExpanded(module: ClientModule) {
+        val name = module.name
+        if (name in expandedModules) {
+            expandedModules.remove(name)
+        } else {
+            expandedModules.add(name)
+        }
+    }
+
+    override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
+        if (click.button() != InputConstants.MOUSE_BUTTON_LEFT) {
+            return true
+        }
+        val mx = click.x
+        val my = click.y
+        val w = mc.window.guiScaledWidth.toFloat()
+        val sw = 360f
+        val searchX1 = (w - sw) / 2f
+        val searchX2 = (w + sw) / 2f
+
+        // The search box is hit-tested in the same dual-space way as the panels.
+        val sxScaled = mx / guiScaleX
+        val syScaled = my / guiScaleY
+        val inSearchH = (sxScaled >= searchX1 && sxScaled <= searchX2) ||
+            (mx >= searchX1.toDouble() && mx <= searchX2.toDouble())
+        val inSearchV =
+            (syScaled >= tabY + 6f && syScaled <= tabY + 42f) ||
+                (my >= (tabY + 6f).toDouble() && my <= (tabY + 42f).toDouble())
+        searchFocused = inSearchH && inSearchV
+        if (searchFocused) {
+            return true
+        }
+
+        dispatchAction(mx, my)
         return true
     }
 
     override fun mouseDragged(click: MouseButtonEvent, offsetX: Double, offsetY: Double): Boolean {
         val drag = draggingSlider ?: return false
-        val mx = click.x.toFloat()
+        val mx = (click.x / guiScaleX).toFloat()
         val span = drag.trackX2 - drag.trackX1
         if (span <= 0f) {
             return true
@@ -540,12 +579,15 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
     override fun mouseMoved(mouseX: Double, mouseY: Double) = Unit
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
-        val mx = mouseX.toFloat()
-        val my = mouseY.toFloat()
+        val sx = mouseX / guiScaleX
+        val sy = mouseY / guiScaleY
         for (panel in panels.values) {
             val bodyTop = panel.top + headerHeight
             val bodyBottom = bodyTop + bodyHeight
-            if (mx >= panel.left && mx <= panel.left + panelWidth && my >= bodyTop && my <= bodyBottom) {
+            val inPoly = sx >= panel.left && sx <= panel.left + panelWidth && sy >= bodyTop && sy <= bodyBottom
+            val inRaw = mouseX in panel.left.toDouble()..(panel.left + panelWidth).toDouble() &&
+                mouseY >= bodyTop.toDouble() && mouseY <= bodyBottom.toDouble()
+            if (inPoly || inRaw) {
                 panel.scroll = (panel.scroll - verticalAmount.toFloat() * 20f).coerceAtLeast(0f)
                 return true
             }
