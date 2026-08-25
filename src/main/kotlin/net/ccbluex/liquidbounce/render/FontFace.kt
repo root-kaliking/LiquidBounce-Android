@@ -21,11 +21,15 @@ package net.ccbluex.liquidbounce.render
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import net.ccbluex.liquidbounce.integration.backend.isMobileArm64
 import net.ccbluex.liquidbounce.render.engine.font.FontId
 import net.ccbluex.liquidbounce.render.engine.font.FontRenderer
 import net.ccbluex.liquidbounce.render.engine.font.FontStyle
 import net.ccbluex.liquidbounce.render.engine.font.GlyphPage.Companion.fontRasterizationLock
 import java.awt.Font
+import java.awt.font.FontRenderContext
+import java.awt.geom.AffineTransform
+import java.awt.geom.Rectangle2D
 import java.awt.image.BufferedImage
 import java.io.File
 
@@ -89,23 +93,43 @@ class FontFace(
 
         withContext(Dispatchers.Default) {
             val fontId = synchronized(fontRasterizationLock) {
-                val graphics = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB).createGraphics()
-                try {
-                    graphics.font = font
-                    val metrics = graphics.fontMetrics
-                    val lineMetrics = font.getLineMetrics("Ag", graphics.fontRenderContext)
+                if (isMobileArm64()) {
+                    // On Android/FCL the JVM's "classloader-namespace" and headless AWT state
+                    // make Graphics2D.getFontMetrics() throw (FontDesignMetrics accesses the
+                    // default ScreenDevice). Measure metrics purely through the font + a
+                    // FontRenderContext, which never touch a ScreenDevice. See #8481.
+                    val frc = FontRenderContext(AffineTransform(), true, true)
+                    val lineMetrics = font.getLineMetrics("Ag", frc)
+                    val bounds = font.getStringBounds("Ag", frc) as Rectangle2D
                     FontId(
                         style,
                         font,
-                        metrics.height.toFloat(),
-                        metrics.ascent.toFloat(),
-                        lineMetrics.underlineOffset,
-                        lineMetrics.underlineThickness,
-                        lineMetrics.strikethroughOffset,
-                        lineMetrics.strikethroughThickness,
+                        height = (bounds.height).toFloat(),
+                        ascent = -(bounds.y).toFloat(),
+                        underlineOffset = lineMetrics.underlineOffset,
+                        underlineThickness = lineMetrics.underlineThickness,
+                        strikethroughOffset = lineMetrics.strikethroughOffset,
+                        strikethroughThickness = lineMetrics.strikethroughThickness,
                     )
-                } finally {
-                    graphics.dispose()
+                } else {
+                    val graphics = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB).createGraphics()
+                    try {
+                        graphics.font = font
+                        val metrics = graphics.fontMetrics
+                        val lineMetrics = font.getLineMetrics("Ag", graphics.fontRenderContext)
+                        FontId(
+                            style,
+                            font,
+                            metrics.height.toFloat(),
+                            metrics.ascent.toFloat(),
+                            lineMetrics.underlineOffset,
+                            lineMetrics.underlineThickness,
+                            lineMetrics.strikethroughOffset,
+                            lineMetrics.strikethroughThickness,
+                        )
+                    } finally {
+                        graphics.dispose()
+                    }
                 }
             }
 

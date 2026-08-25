@@ -19,6 +19,7 @@
 package net.ccbluex.liquidbounce.render.engine.font
 
 import com.mojang.blaze3d.GpuFormat
+import net.ccbluex.liquidbounce.integration.backend.isMobileArm64
 import net.ccbluex.liquidbounce.render.engine.type.BoundingBox2f
 import net.ccbluex.liquidbounce.render.engine.type.BoundingBox2s
 import net.ccbluex.liquidbounce.utils.client.gpuDevice
@@ -197,18 +198,20 @@ abstract class GlyphPage {
                 val baselineX = characterInfo.atlasLocation.x - characterInfo.pixelXMin + DEFAULT_PADDING
                 val baselineY = characterInfo.atlasLocation.y - characterInfo.pixelYMin + DEFAULT_PADDING
 
-                when (GLFW.glfwGetPlatform()) {
-                    GLFW.GLFW_PLATFORM_X11 -> {
-                        // Java2D's X11 bitmap glyph path can crash in FreeType; rendering the same outline avoids it.
-                        // Fixes https://github.com/CCBlueX/LiquidBounce/issues/9056
-                        atlasGraphics.fill(
-                            atlasGraphics.font.createGlyphVector(fontRendererContext, character)
-                                .getGlyphOutline(0, baselineX.toFloat(), baselineY.toFloat())
-                        )
-                    }
-                    else -> {
-                        atlasGraphics.drawString(character, baselineX, baselineY)
-                    }
+                // On ARM64/Android the JVM's headless AWT state makes drawString() internally
+                // call Graphics2D.getFontMetrics(), which accesses the default ScreenDevice and
+                // throws a HeadlessException. Rasterize the glyph outline instead, like the X11
+                // path already does (used to avoid a FreeType bitmap crash - #9056).
+                val useOutlineRasterization =
+                    isMobileArm64() || GLFW.glfwGetPlatform() == GLFW.GLFW_PLATFORM_X11
+
+                if (useOutlineRasterization) {
+                    atlasGraphics.fill(
+                        atlasGraphics.font.createGlyphVector(fontRendererContext, character)
+                            .getGlyphOutline(0, baselineX.toFloat(), baselineY.toFloat())
+                    )
+                } else {
+                    atlasGraphics.drawString(character, baselineX, baselineY)
                 }
             }
         }
