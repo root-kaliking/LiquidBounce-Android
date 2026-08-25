@@ -65,7 +65,7 @@ import kotlin.math.roundToInt
  * `src-theme/src/colors.scss`, `TabbedClickGui.svelte`, `Panel.svelte`, `Module.svelte`,
  * `Search.svelte` and `Switch.svelte` so it looks and feels like the browser version.
  */
-@Suppress("TooManyFunctions", "MagicNumber", "LongMethod", "MaxLineLength")
+@Suppress("TooManyFunctions", "MagicNumber", "LongMethod", "MaxLineLength", "LargeClass")
 class NativeClickGuiScreen : Screen(
     "Native ClickGUI".asPlainText()
 ), EventListener {
@@ -482,7 +482,7 @@ class NativeClickGuiScreen : Screen(
                     this.y = y + 8f
                     scale = vanillaScale * 0.85f
                 }
-                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f, value.enabled)
+                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleGroup(value))
                 if (value.enabled) {
                     return renderSettings(category, module, x, rowBottom, panelRight, value.containedValues.toList(), depth + 1)
@@ -511,14 +511,12 @@ class NativeClickGuiScreen : Screen(
         return when (value.valueType) {
             ValueType.BOOLEAN -> {
                 drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
-                @Suppress("UNCHECKED_CAST")
-                val cur = (value as Value<Boolean>).get()
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
                     this.y = y + 8f
                     scale = vanillaScale * 0.85f
                 }
-                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f, cur)
+                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleBool(value))
                 rowBottom
             }
@@ -571,7 +569,7 @@ class NativeClickGuiScreen : Screen(
 
     // ---- Widgets ----
 
-    private fun GuiGraphicsExtractor.drawSwitch(key: String, centerX: Float, centerY: Float, on: Boolean) {
+    private fun GuiGraphicsExtractor.drawSwitch(key: String, centerX: Float, centerY: Float) {
         val w = 22f
         val h = 12f
         switchAnim.getOrPut(key) { Animated(7f) }
