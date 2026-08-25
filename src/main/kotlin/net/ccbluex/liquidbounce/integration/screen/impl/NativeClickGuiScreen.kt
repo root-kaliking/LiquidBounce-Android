@@ -25,11 +25,6 @@ import net.ccbluex.liquidbounce.config.types.Value
 import net.ccbluex.liquidbounce.config.types.ValueType
 import net.ccbluex.liquidbounce.config.types.group.ModeValueGroup
 import net.ccbluex.liquidbounce.config.types.group.ToggleableValueGroup
-import net.ccbluex.liquidbounce.event.EventListener
-import net.ccbluex.liquidbounce.event.events.MouseButtonEvent as PluginMouseButtonEvent
-import net.ccbluex.liquidbounce.event.events.MouseCursorEvent
-import net.ccbluex.liquidbounce.event.events.MouseScrollEvent
-import net.ccbluex.liquidbounce.event.handler
 import net.ccbluex.liquidbounce.features.module.ClientModule
 import net.ccbluex.liquidbounce.features.module.ModuleCategories
 import net.ccbluex.liquidbounce.features.module.ModuleCategory
@@ -52,6 +47,7 @@ import net.ccbluex.liquidbounce.utils.client.mc
 import net.ccbluex.liquidbounce.utils.text.asPlainText
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.screens.Screen
+import net.minecraft.client.input.MouseButtonEvent
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -68,7 +64,7 @@ import kotlin.math.roundToInt
 @Suppress("TooManyFunctions", "MagicNumber", "LongMethod", "MaxLineLength", "LargeClass")
 class NativeClickGuiScreen : Screen(
     "Native ClickGUI".asPlainText()
-), EventListener {
+) {
 
     // ---- Foundation palette (src-theme/src/colors.scss) ----
     private val accent = Color4b.fromHex("#4677ff")
@@ -201,6 +197,9 @@ class NativeClickGuiScreen : Screen(
         tickAnimations()
         ensurePanels()
         regions.clear()
+        // Keep the pointer in sync from the render pass too: on touch inputs
+        // mouseMoved may not fire while dragging, but the render pass always does.
+        updatePointer(mouseX.toFloat(), mouseY.toFloat())
         with(g) {
             renderScreen(guiW(), guiH(), mouseX.toFloat(), mouseY.toFloat())
         }
@@ -602,16 +601,17 @@ class NativeClickGuiScreen : Screen(
         }
     }
 
-    // ---- Input (global event stream) ----
+    // ---- Input ----
     //
-    // The external web UI is driven by LiquidBounce's global mouse events
-    // (MouseCursorEvent / MouseButtonEvent / MouseScrollEvent). These carry
-    // GUI-scaled coordinates -- the exact space the renderer uses -- and are
-    // proven to work on Android. The native ClickGUI routes its input through
-    // the very same channel, so taps, drags, right-clicks and scroll behave
-    // identically everywhere. Screen.mouseClicked etc. are deliberately not
-    // overridden: on some Android builds that path is unreliable, and using
-    // both would double-trigger toggles.
+    // Input is handled through the vanilla Screen mouse callbacks (the same way
+    // OpenNilore's ClickGUI drives its panels). This is the reliable path on
+    // Android: the renderer lays out in GUI-scaled coordinates, and MC hands the
+    // mouse callbacks the same GUI-scaled space, so hit-testing is direct. We do
+    // NOT use LiquidBounce's global event stream here, because on ARM builds that
+    // channel is not wired up and panels render but never react to input.
+    //
+    // 1.21.11 uses event-object signatures for clicks (MouseButtonEvent) and plain
+    // doubles for scroll/move, matching DroneControlScreen in this codebase.
 
     private var pointerX = 0f
     private var pointerY = 0f
@@ -622,31 +622,32 @@ class NativeClickGuiScreen : Screen(
     private var pendingRegionAction: Action? = null
     private val dragThreshold = 12f
 
-    private val cursorHook = handler<MouseCursorEvent> { event ->
-        if (isCurrentScreen()) {
-            updatePointer(event.x.toFloat(), event.y.toFloat())
+    override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
+        val x = click.x.toFloat()
+        val y = click.y.toFloat()
+        if (click.button() == InputConstants.MOUSE_BUTTON_RIGHT) {
+            pressRight(x, y)
+        } else {
+            pressLeft(x, y)
         }
+        return true
     }
 
-    private val buttonHook = handler<PluginMouseButtonEvent> { event ->
-        if (!isCurrentScreen()) {
-            return@handler
+    override fun mouseReleased(click: MouseButtonEvent): Boolean {
+        if (click.button() != InputConstants.MOUSE_BUTTON_RIGHT) {
+            releaseLeft()
         }
-        when {
-            event.isPressed && event.isLeftButton -> pressLeft(pointerX, pointerY)
-            event.isReleased && event.isLeftButton -> releaseLeft()
-            event.isPressed && event.isRightButton -> pressRight(pointerX, pointerY)
-        }
+        return true
     }
 
-    private val scrollHook = handler<MouseScrollEvent> { event ->
-        if (!isCurrentScreen()) {
-            return@handler
-        }
-        handleScroll(event.vertical.toFloat())
+    override fun mouseMoved(x: Double, y: Double) {
+        updatePointer(x.toFloat(), y.toFloat())
     }
 
-    private fun isCurrentScreen(): Boolean = mc.gui.screen() === this
+    override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
+        handleScroll(verticalAmount.toFloat())
+        return true
+    }
 
     private fun updatePointer(x: Float, y: Float) {
         pointerX = x
@@ -806,11 +807,6 @@ class NativeClickGuiScreen : Screen(
             return true
         }
         return super.keyPressed(input)
-    }
-
-    override fun removed() {
-        unregister()
-        super.removed()
     }
 
     // ================= Values =================
