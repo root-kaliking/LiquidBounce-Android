@@ -169,7 +169,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
     private fun searchMode(): Boolean = searchText.isNotBlank()
 
     private fun visibleCategories(): List<ModuleCategory> {
-        val used = ModuleManager.filter { it.category != ModuleClickGui.category }.mapTo(HashSet()) { it.category }
+        val used = ModuleManager.filter { it.name != ModuleClickGui.name }.mapTo(HashSet()) { it.category }
         return ModuleCategories.entries.filter { it.tag != "ClickGUI" && it in used }.sortedBy { it.tag }
     }
 
@@ -182,21 +182,21 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         val labels = listOf("ClickGUI", "HUD Editor", "Settings")
         val tabWidth = 170f
         val total = labels.size * tabWidth + (labels.size - 1) * 8f
-        var xx = (w - total) / 2f
+        var startX = (w - total) / 2f
 
         labels.forEachIndexed { index, label ->
-            val x1 = xx
-            val x2 = xx + tabWidth
+            val x1 = startX
+            val x2 = startX + tabWidth
             if (index == activeTab) {
                 drawRoundedRect(x1, 8f, x2, tabY - 4f, 8f, tabActiveBg, tabActiveBorder, 1.5f)
             }
             font.draw(label.asPlainText()) {
                 horizontalAnchor = HorizontalAnchor.CENTER
-                x = (x1 + x2) / 2f
-                y = 14f
+                this.x = (x1 + x2) / 2f
+                this.y = 14f
                 scale = vanilla * 1.15f
             }
-            xx += tabWidth + 8f
+            startX += tabWidth + 8f
         }
     }
 
@@ -212,8 +212,8 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         val text = if (searchText.isBlank()) "Search modules..." else searchText
         val color = if (searchText.isBlank()) dimmedText.with(a = 140) else textColor
         font.draw(text.asPlainText()) {
-            x = x1 + 14f
-            y = y1 + 9f
+            this.x = x1 + 14f
+            this.y = y1 + 9f
             scale = vanilla
         }
 
@@ -238,8 +238,8 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         drawRoundedRect(x, y, panelRight, y + headerHeight, 6f, headerBg, headerBorder, 1.5f)
 
         font.draw(category.tag.asPlainText()) {
-            x = x + 12f
-            y = y + 6f
+            this.x = x + 12f
+            this.y = y + 6f
             scale = vanilla * 1.1f
         }
 
@@ -274,7 +274,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
     }
 
     private fun modulesFor(category: ModuleCategory): List<ClientModule> =
-        ModuleManager.filter { it.category == category && it !== ModuleClickGui }.sortedBy { it.name }
+        ModuleManager.filter { it.category == category && it.name != ModuleClickGui.name }.sortedBy { it.name }
 
     private fun GuiGraphicsExtractor.renderModule(
         module: ClientModule,
@@ -292,16 +292,11 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         }
 
         val isEnabled = module.enabled
-        val color = when {
-            hover -> textColor
-            isEnabled -> accent
-            else -> dimmedText
-        }
 
         font.draw(module.name.asPlainText()) {
             horizontalAnchor = HorizontalAnchor.CENTER
-            x = (x + panelRight) / 2f
-            y = y + (rowHeight - font.height * vanilla) / 2f
+            this.x = (x + panelRight) / 2f
+            this.y = y + (rowHeight - font.height * vanilla) / 2f
             scale = vanilla
         }
 
@@ -364,8 +359,8 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
                 drawQuad(x, y, panelRight, rowBottom, settingsBg)
                 val outerEnabled = value.enabled
                 font.draw(value.name.asPlainText()) {
-                    x = indent
-                    y = y + (settingRowHeight - font.height * vanilla) / 2f
+                    this.x = indent
+                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                     scale = vanilla * 0.9f
                 }
                 drawSwitch(panelRight - 42f, y + settingRowHeight / 2f, outerEnabled)
@@ -382,15 +377,15 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
             is ModeValueGroup<*> -> {
                 drawQuad(x, y, panelRight, rowBottom, settingsBg)
                 font.draw(value.name.asPlainText()) {
-                    x = indent
-                    y = y + (settingRowHeight - font.height * vanilla) / 2f
+                    this.x = indent
+                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                     scale = vanilla * 0.9f
                 }
                 val cur = value.activeMode.name
                 font.draw(cur.asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    x = panelRight - 12f
-                    y = y + (settingRowHeight - font.height * vanilla) / 2f
+                    this.x = panelRight - 12f
+                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                     scale = vanilla * 0.8f
                 }
                 drawModeChevron(panelRight - 40f, y + settingRowHeight / 2f)
@@ -404,8 +399,8 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
                 drawQuad(x, y, panelRight, rowBottom, settingsBg)
                 val cur = value.get() as Boolean
                 font.draw(value.name.asPlainText()) {
-                    x = indent
-                    y = y + (settingRowHeight - font.height * vanilla) / 2f
+                    this.x = indent
+                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                     scale = vanilla * 0.9f
                 }
                 drawSwitch(panelRight - 42f, y + settingRowHeight / 2f, cur)
@@ -416,14 +411,14 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
             ValueType.FLOAT, ValueType.INT -> {
                 drawQuad(x, y, panelRight, rowBottom, settingsBg)
                 font.draw(value.name.asPlainText()) {
-                    x = indent
-                    y = y + 3f
+                    this.x = indent
+                    this.y = y + 3f
                     scale = vanilla * 0.85f
                 }
                 font.draw(formatScalar(value).asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    x = panelRight - 12f
-                    y = y + 3f
+                    this.x = panelRight - 12f
+                    this.y = y + 3f
                     scale = vanilla * 0.8f
                 }
                 // slider
@@ -442,16 +437,16 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
             else -> {
                 drawQuad(x, y, panelRight, rowBottom, settingsBg)
                 font.draw(value.name.asPlainText()) {
-                    x = indent
-                    y = y + (settingRowHeight - font.height * vanilla) / 2f
+                    this.x = indent
+                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                     scale = vanilla * 0.9f
                 }
                 val display = displayValue(value)
                 if (display.isNotBlank()) {
                     font.draw(display.asPlainText()) {
                         horizontalAnchor = HorizontalAnchor.END
-                        x = panelRight - 12f
-                        y = y + (settingRowHeight - font.height * vanilla) / 2f
+                        this.x = panelRight - 12f
+                        this.y = y + (settingRowHeight - font.height * vanilla) / 2f
                         scale = vanilla * 0.8f
                     }
                 }
@@ -512,6 +507,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
                 }
                 is Action.ToggleBool -> {
                     val v = action.value
+                    @Suppress("UNCHECKED_CAST")
                     if (v is Value<Boolean>) {
                         v.set(!v.get())
                     }
@@ -589,10 +585,12 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         when (value.valueType) {
             ValueType.INT -> {
                 val intVal = newValue.roundToInt()
+                @Suppress("UNCHECKED_CAST")
                 (value as? Value<Int>)?.set(intVal)
             }
             else -> {
                 val floatVal = (newValue * 100f).roundToInt() / 100f
+                @Suppress("UNCHECKED_CAST")
                 (value as? Value<Float>)?.set(floatVal)
             }
         }
@@ -656,4 +654,3 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         is Double -> value.toFloat()
         else -> 0f
     }
-}
