@@ -22,6 +22,7 @@ import ai.djl.engine.Engine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.ccbluex.liquidbounce.config.ConfigSystem.rootFolder
+import net.ccbluex.liquidbounce.integration.backend.isMobileArm64
 import net.ccbluex.liquidbounce.integration.task.type.Task
 import net.ccbluex.liquidbounce.utils.client.clientLogger
 import java.util.Locale
@@ -80,6 +81,20 @@ object DeepLearningEngine {
     suspend fun init(task: Task) {
         this.task = task
         isInitialized = false
+
+        // On ARM64 / Android the PyTorch (DJL) native libraries cannot be loaded:
+        // the Android linker's "classloader-namespace" refuses to dlopen the
+        // downloaded libc10.so (see LiquidBounce #8423). There is no usable fix at
+        // mod level, so we skip the download & init entirely instead of wasting
+        // bandwidth and logging a failure every launch. Throwing lets the caller's
+        // existing failure handling mark the engine unavailable and keep the client
+        // running with AI-augmented features falling back to non-AI paths.
+        if (isMobileArm64()) {
+            throw UnsupportedOperationException(
+                "PyTorch native libraries are not loadable on ARM64/Android " +
+                    "(JVM 'classloader-namespace' rejects dlopen of libc10.so)."
+            )
+        }
 
         logger.info("Initializing engine...")
         val engine = withContext(Dispatchers.IO) {
