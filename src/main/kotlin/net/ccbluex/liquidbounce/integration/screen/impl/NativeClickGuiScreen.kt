@@ -25,6 +25,11 @@ import net.ccbluex.liquidbounce.config.types.Value
 import net.ccbluex.liquidbounce.config.types.ValueType
 import net.ccbluex.liquidbounce.config.types.group.ModeValueGroup
 import net.ccbluex.liquidbounce.config.types.group.ToggleableValueGroup
+import net.ccbluex.liquidbounce.event.EventListener
+import net.ccbluex.liquidbounce.event.events.MouseButtonEvent as PluginMouseButtonEvent
+import net.ccbluex.liquidbounce.event.events.MouseCursorEvent
+import net.ccbluex.liquidbounce.event.events.MouseScrollEvent
+import net.ccbluex.liquidbounce.event.handler
 import net.ccbluex.liquidbounce.features.module.ClientModule
 import net.ccbluex.liquidbounce.features.module.ModuleCategories
 import net.ccbluex.liquidbounce.features.module.ModuleCategory
@@ -38,7 +43,6 @@ import net.ccbluex.liquidbounce.render.FontManager
 import net.ccbluex.liquidbounce.render.drawHorizontalLine
 import net.ccbluex.liquidbounce.render.drawQuad
 import net.ccbluex.liquidbounce.render.drawRoundedRect
-import net.ccbluex.liquidbounce.render.drawTriangle
 import net.ccbluex.liquidbounce.render.drawVerticalLine
 import net.ccbluex.liquidbounce.render.engine.font.HorizontalAnchor
 import net.ccbluex.liquidbounce.render.engine.type.Color4b
@@ -48,63 +52,124 @@ import net.ccbluex.liquidbounce.utils.client.mc
 import net.ccbluex.liquidbounce.utils.text.asPlainText
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.screens.Screen
-import net.minecraft.client.input.KeyEvent
-import net.minecraft.client.input.MouseButtonEvent
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
  * Native, in-game replication of the LiquidBounce Web ClickGUI.
  *
- * The Web (Svelte) ClickGUI cannot render on ARM64 / Android because the integration
- * (CEF) backend produces no visible texture. This screen redraws the same layout, palette
- * and interaction directly with the Minecraft renderer, so pressing the [ModuleClickGui]
- * bind (right Shift) opens a fully usable configuration menu in-game.
+ * The Web (Svelte) ClickGUI is served by the integration backend and rendered into a
+ * browser texture, but the CEF backend is unavailable on ARM64 / Android so no texture
+ * is produced. This screen redraws the same layout, palette and animated behaviour
+ * directly with the Minecraft renderer. Values are taken 1:1 from
+ * `src-theme/src/colors.scss`, `TabbedClickGui.svelte`, `Panel.svelte`, `Module.svelte`,
+ * `Search.svelte` and `Switch.svelte` so it looks and feels like the browser version.
  */
 @Suppress("TooManyFunctions", "MagicNumber", "LongMethod", "MaxLineLength")
-class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
+class NativeClickGuiScreen : Screen(
+    "Native ClickGUI".asPlainText()
+), EventListener {
 
-    // ---- Palette (mirrors src-theme/src/colors.scss) ----
+    // ---- Foundation palette (src-theme/src/colors.scss) ----
     private val accent = Color4b.fromHex("#4677ff")
     private val textColor = Color4b.WHITE
-    private val dimmedText = Color4b.fromHex("#d3d3d3")
-    private val headerBg = Color4b.fromHex("#1a1c21")
-    private val headerBorder = accent
-    private val bodyBg = Color4b.fromHex("#0d0e12").with(a = 250)
-    private val rowHoverBg = Color4b.fromHex("#25282e")
-    private val settingsBg = Color4b.fromHex("#15171c")
-    private val overlayBg = Color4b.fromHex("#05060a").with(a = 235)
-    private val tabActiveBg = accent.with(a = 34)
+    private val textDimmed = Color4b.fromHex("#d3d3d3")
+
+    // ---- ClickGUI palette (base-N = black at N% opacity) ----
+    private val base50 = Color4b.BLACK.with(a = 128)
+    private val base70 = Color4b.BLACK.with(a = 178)
+    private val base80 = Color4b.BLACK.with(a = 204)
+    private val base85 = Color4b.BLACK.with(a = 217)
+    private val base90 = Color4b.BLACK.with(a = 230)
+
+    private val panelHeaderBg = base90
+    private val panelHeaderBorder = accent
+    private val panelBodyBg = base80
+    private val panelShadow = base50
+    private val moduleHoverBg = base85
+    private val moduleSettingsBg = base50
+
+    private val searchBg = base90
+    private val searchBorder = accent
+
+    private val tabsBg = base85
+    private val tabActiveBg = accent.with(a = 31)
     private val tabActiveBorder = accent
-    private val tabBarBg = Color4b.fromHex("#101116").with(a = 250)
-    private val sliderTrack = Color4b.fromHex("#3a3f4a")
+
+    private val overlayBg = Color4b.BLACK.with(a = 153)
+
+    private val switchTrack = Color4b.fromHex("#737373")
+    private val switchTrackActive = Color4b.fromHex("#1c3766")
+    private val switchThumb = Color4b.WHITE
+    private val switchThumbActive = accent
+
+    private val sliderTrack = Color4b.fromHex("#333333")
     private val sliderFill = accent
 
-    // ---- Layout constants ----
-    private val panelWidth = 252f
-    private val headerHeight = 30f
-    private val rowHeight = 26f
-    private val settingRowHeight = 28f
-    private val tabY = 48f
-    private val contentY = 56f
-    private val bodyHeight = 400f
+    // ---- Layout (from the Svelte source) ----
+    private val panelWidth = 250f
+    private val headerHeight = 38f
+    private val moduleRowHeight = 34f
+    private val settingRowHeight = 30f
+    private val panelMaxBodyHeight = 545f
 
     private val font = FontManager.FONT_RENDERER
-    private val vanilla = font.scaleToVanillaFont
+    private val vanillaScale = font.scaleToVanillaFont
 
-    // ---- UI state ----
-    private var searchText = ""
-    private var searchFocused = false
-    private var activeTab = 0
+    // ---- Animation ----
+    private var lastTickNanos = 0L
+    private val panelBodyAnim = HashMap<ModuleCategory, Animated>()
+    private val expandIconAnim = HashMap<ModuleCategory, Animated>()
+    private val switchAnim = HashMap<String, Animated>()
+
+    private class Animated(private val speed: Float) {
+        var value = 0f
+            private set
+
+        fun advance(delta: Float, target: Float) {
+            value += (target - value) * min(1f, delta * speed)
+        }
+    }
+
+    // ---- State ----
+    private class PanelConfig(
+        var left: Float,
+        var top: Float,
+        var expanded: Boolean,
+        var scroll: Float = 0f,
+    )
+
+    private val panels = HashMap<ModuleCategory, PanelConfig>()
     private val expandedModules = HashSet<String>()
-    private val expandedGroups = HashSet<String>()
-
-    private class Panel(var left: Float, var top: Float, var collapsed: Boolean, var scroll: Float = 0f)
-    private val panels = HashMap<ModuleCategory, Panel>()
 
     private class SliderDrag(val value: Value<*>, val trackX1: Float, val trackX2: Float)
     private var draggingSlider: SliderDrag? = null
 
-    // ---- Hit testing (rebuilt every render) ----
+    private var dragCategory: ModuleCategory? = null
+    private var dragOffset: Pair<Double, Double>? = null
+
+    // ---- Search ----
+    private var searchText = ""
+    private var searchFocused = false
+    private val searchResults = ArrayList<ClientModule>()
+
+    private fun rebuildSearch() {
+        searchResults.clear()
+        val query = searchText.trim().lowercase().replace(" ", "")
+        if (query.isEmpty()) {
+            return
+        }
+        for (module in ModuleManager) {
+            if (module.name == ModuleClickGui.name) {
+                continue
+            }
+            if (module.name.lowercase().replace(" ", "").contains(query)) {
+                searchResults += module
+            }
+        }
+    }
+
+    // ---- Hit testing ----
     private sealed interface Action {
         data class TogglePanel(val category: ModuleCategory) : Action
         data class ToggleModule(val module: ClientModule) : Action
@@ -122,210 +187,264 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         val y1: Float,
         val action: Action?,
     ) {
-        fun contains(mx: Float, my: Float): Boolean = mx >= x0 && mx <= x1 && my >= y0 && my <= y1
+        fun contains(px: Float, py: Float): Boolean = px >= x0 && px <= x1 && py >= y0 && py <= y1
     }
 
     private val regions = ArrayList<Region>()
 
+    private fun guiW(): Float = mc.window.guiScaledWidth.toFloat()
+    private fun guiH(): Float = mc.window.guiScaledHeight.toFloat()
+
     // ================= Rendering =================
 
     override fun extractRenderState(g: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
-        val w = mc.window.guiScaledWidth.toFloat()
-        val h = mc.window.guiScaledHeight.toFloat()
-        ensureLayout(w)
+        tickAnimations()
+        ensurePanels()
         regions.clear()
         with(g) {
-            renderScreen(w, h, mouseX.toFloat(), mouseY.toFloat())
+            renderScreen(guiW(), guiH(), mouseX.toFloat(), mouseY.toFloat())
         }
-    }
-
-    override fun extractBackground(g: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
-        // Full-screen dimming happens in [extractRenderState].
     }
 
     override fun shouldCloseOnEsc(): Boolean = true
     override fun isPauseScreen(): Boolean = false
 
-    private fun ensureLayout(width: Float) {
+    private fun tickAnimations() {
+        val now = System.nanoTime()
+        val dt = if (lastTickNanos == 0L) 1f / 60f else (now - lastTickNanos) / 1_000_000_000f
+        lastTickNanos = now
+
+        for ((category, config) in panels) {
+            panelBodyAnim[category]?.advance(dt, if (config.expanded) 1f else 0f)
+            expandIconAnim[category]?.advance(dt, if (config.expanded) 1f else 0f)
+        }
+        for ((key, anim) in switchAnim) {
+            anim.advance(dt, if (isSwitchActive(key)) 1f else 0f)
+        }
+    }
+
+    private fun isSwitchActive(key: String): Boolean {
+        val name = key.substringBefore('#')
+        val valueName = key.substringAfter('#')
+        val module = ModuleManager.getModuleByName(name) ?: return false
+        val value = module.containedValues.find { it.name == valueName } ?: return false
+        @Suppress("UNCHECKED_CAST")
+        return (value as? Value<Boolean>)?.get() ?: (value is ToggleableValueGroup && value.enabled)
+    }
+
+    private fun ensurePanels() {
         if (panels.isNotEmpty()) {
             return
         }
-        val cats = ModuleCategories.entries.filter { it.tag != "ClickGUI" }.toList()
-        val cols = maxOf(1, ((width - 20f) / (panelWidth + 12f)).toInt().coerceAtLeast(1))
-        cats.forEachIndexed { index, category ->
-            val col = index % cols
-            val row = index / cols
-            panels[category] = Panel(16f + col * (panelWidth + 12f), contentY + row * 48f, collapsed = false)
-        }
-    }
-
-    private fun GuiGraphicsExtractor.renderScreen(w: Float, h: Float, mx: Float, my: Float) {
-        drawQuad(0f, 0f, w, h, overlayBg)
-        renderSearchBox(w)
-        renderTabs(w)
-        renderPanels(mx, my)
-    }
-
-    private fun searchMode(): Boolean = searchText.isNotBlank()
-
-    private fun visibleCategories(): List<ModuleCategory> {
-        val used = ModuleManager.filter { it.name != ModuleClickGui.name }.mapTo(HashSet()) { it.category }
-        return ModuleCategories.entries.filter { it.tag != "ClickGUI" && it in used }.sortedBy { it.tag }
-    }
-
-    // ---- Tabs ----
-
-    private fun GuiGraphicsExtractor.renderTabs(w: Float) {
-        drawQuad(0f, 0f, w, tabY, tabBarBg)
-        drawHorizontalLine(0f, w, tabY, 1.5f, accent.with(a = 70))
-
-        val labels = listOf("ClickGUI", "HUD Editor", "Settings")
-        val tabWidth = 170f
-        val total = labels.size * tabWidth + (labels.size - 1) * 8f
-        var startX = (w - total) / 2f
-
-        labels.forEachIndexed { index, label ->
-            val x1 = startX
-            val x2 = startX + tabWidth
-            if (index == activeTab) {
-                drawRoundedRect(x1, 8f, x2, tabY - 4f, 8f, tabActiveBg, tabActiveBorder, 1.5f)
+        ModuleCategories.entries
+            .filter { it.tag != "ClickGUI" }
+            .forEachIndexed { index, category ->
+                panels[category] = PanelConfig(left = 20f, top = index * 50 + 20, expanded = false)
+                panelBodyAnim[category] = Animated(6f)
+                expandIconAnim[category] = Animated(5f)
             }
-            font.draw(label.asPlainText()) {
-                horizontalAnchor = HorizontalAnchor.CENTER
-                this.x = (x1 + x2) / 2f
-                this.y = 14f
-                scale = vanilla * 1.15f
-            }
-            startX += tabWidth + 8f
-        }
-    }
-
-    private fun GuiGraphicsExtractor.renderSearchBox(w: Float) {
-        val sw = 360f
-        val x1 = (w - sw) / 2f
-        val x2 = (w + sw) / 2f
-        val y1 = tabY + 6f
-        val y2 = y1 + 36f
-
-        drawRoundedRect(x1, y1, x2, y2, 10f, headerBg, headerBorder, 1.5f)
-
-        val text = if (searchText.isBlank()) "Search modules..." else searchText
-        val color = if (searchText.isBlank()) dimmedText.with(a = 140) else textColor
-        font.draw(text.asPlainText()) {
-            this.x = x1 + 14f
-            this.y = y1 + 9f
-            scale = vanilla
-        }
-
-        regions += Region(x1, y1, x2, y2, null)
-    }
-
-    // ---- Panels ----
-
-    private fun GuiGraphicsExtractor.renderPanels(mx: Float, my: Float) {
-        for (category in visibleCategories()) {
-            val panel = panels[category] ?: continue
-            renderPanel(category, panel, mx, my)
-        }
-    }
-
-    private fun GuiGraphicsExtractor.renderPanel(category: ModuleCategory, panel: Panel, mx: Float, my: Float) {
-        val x = panel.left
-        val y = panel.top
-        val panelRight = x + panelWidth
-
-        // Header
-        drawRoundedRect(x, y, panelRight, y + headerHeight, 6f, headerBg, headerBorder, 1.5f)
-
-        font.draw(category.tag.asPlainText()) {
-            this.x = x + 12f
-            this.y = y + 6f
-            scale = vanilla * 1.1f
-        }
-
-        // Chevron
-        val chevY = y + headerHeight / 2f
-        if (panel.collapsed) {
-            drawTriangle(panelRight - 30f, chevY - 3f, panelRight - 20f, chevY, panelRight - 30f, chevY + 3f, Color4b.WHITE.with(a = 120))
-        } else {
-            drawTriangle(panelRight - 30f, chevY - 3f, panelRight - 20f, chevY - 3f, panelRight - 25f, chevY + 3f, Color4b.WHITE.with(a = 120))
-        }
-        regions += Region(x, y, panelRight, y + headerHeight, Action.TogglePanel(category))
-
-        if (panel.collapsed) {
-            return
-        }
-
-        // Body
-        val bodyTop = y + headerHeight
-        val bodyBottom = bodyTop + bodyHeight
-        drawRoundedRect(x, bodyTop, panelRight, bodyBottom, 0f, bodyBg)
-
-        scissorStack.withPush(getBounds(x, bodyTop, panelWidth, bodyHeight - 1f)) {
-            var curY = bodyTop + 4f - panel.scroll
-            for (module in modulesFor(category)) {
-                curY = renderModule(module, x, curY, panelRight, mx, my)
-            }
-        }
-
-        // scroll hint
-        drawVerticalLine(panelRight - 2f, bodyTop + 2f, bodyBottom - 2f, 2f, Color4b.WHITE.with(a = 36))
-        regions += Region(x, bodyTop, panelRight, bodyBottom, null)
     }
 
     private fun modulesFor(category: ModuleCategory): List<ClientModule> =
         ModuleManager.filter { it.category == category && it.name != ModuleClickGui.name }.sortedBy { it.name }
 
-    private fun GuiGraphicsExtractor.renderModule(
-        module: ClientModule,
-        x: Float,
-        y: Float,
-        panelRight: Float,
-        mx: Float,
-        my: Float,
-    ): Float {
-        val rowBottom = y + rowHeight
+    private fun GuiGraphicsExtractor.renderScreen(w: Float, h: Float, mx: Float, my: Float) {
+        drawQuad(0f, 0f, w, h, overlayBg)
+        renderTabs(w)
+        renderSearch(w)
+        for (category in panels.keys.sortedBy { it.tag }) {
+            renderPanel(category, panels[category] ?: continue, mx, my)
+        }
+    }
+
+    // ---- Tabs ----
+
+    private fun GuiGraphicsExtractor.renderTabs(w: Float) {
+        val titles = listOf("ClickGUI", "HUD Editor", "Settings")
+        val buttonW = 120f
+        val height = 40f
+        val gap = 5f
+        val totalW = titles.size * buttonW + (titles.size - 1) * gap
+        val startX = (w - totalW) / 2f
+
+        drawRoundedRect(startX - 6f, 9f, startX + totalW + 6f, 9f + height + 6f, height, tabsBg, null, 0f)
+
+        var cx = startX
+        titles.forEachIndexed { index, title ->
+            val x1 = cx
+            val x2 = cx + buttonW
+            if (index == 0) {
+                drawRoundedRect(x1, 15f, x2, 15f + height, height / 2f, tabActiveBg, tabActiveBorder, 1f)
+            }
+            font.draw(title.asPlainText()) {
+                horizontalAnchor = HorizontalAnchor.CENTER
+                this.x = (x1 + x2) / 2f
+                this.y = 15f + (height - font.height * vanillaScale) / 2f
+                scale = vanillaScale
+            }
+            cx += buttonW + gap
+        }
+        regions += Region(startX - 6f, 9f, startX + totalW + 6f, 9f + height + 6f, null)
+    }
+
+    // ---- Search ----
+
+    private fun GuiGraphicsExtractor.renderSearch(w: Float) {
+        val hasResults = searchResults.isNotEmpty() || searchFocused
+        val sw = min(600f, w - 20f)
+        val x1 = (w - sw) / 2f
+        val x2 = (w + sw) / 2f
+        val y1 = 70f
+        val y2 = y1 + 50f
+
+        val radius = if (hasResults) 10f else 30f
+        drawRoundedRect(x1, y1, x2, y2, radius, searchBg, null, 0f)
+
+        val placeholder = searchText.isEmpty()
+        font.draw((if (placeholder) "Search" else searchText).asPlainText()) {
+            this.x = x1 + 25f
+            this.y = y1 + (50f - font.height * vanillaScale) / 2f
+            scale = vanillaScale
+        }
+
+        if (!placeholder) {
+            drawHorizontalLine(x1, x2, y2, 2f, searchBorder)
+            drawResults(x1, y2, x2)
+        }
+
+        regions += Region(x1, y1, x2, y2, null)
+    }
+
+    private fun GuiGraphicsExtractor.drawResults(x1: Float, y1: Float, x2: Float) {
+        val listHeight = 250f
+        drawQuad(x1, y1, x2, y1 + listHeight, searchBg)
+        if (searchResults.isEmpty()) {
+            font.draw("No modules found".asPlainText()) {
+                this.x = x1 + 25f
+                this.y = y1 + 7f
+                scale = vanillaScale
+            }
+            return
+        }
+        var y = y1 + 5f
+        val lineH = 30f
+        for (module in searchResults) {
+            if (y + lineH > y1 + listHeight) {
+                break
+            }
+            font.draw(module.name.asPlainText()) {
+                this.x = x1 + 25f
+                this.y = y + 7f
+                scale = vanillaScale
+            }
+            regions += Region(x1, y, x2, y + lineH, Action.ToggleModule(module))
+            y += lineH
+        }
+    }
+
+    // ---- Panels ----
+
+    private fun GuiGraphicsExtractor.renderPanel(category: ModuleCategory, config: PanelConfig, mx: Float, my: Float) {
+        val x = config.left
+        val y = config.top
+        val right = x + panelWidth
+
+        // Soft shadow rim (approximates box-shadow 0 0 10px).
+        drawQuad(x - 6f, y - 6f, right + 6f, y + headerHeight + 6f + panelBodyAnim[category]!!.value * panelMaxBodyHeight, panelShadow.with(a = 40))
+
+        // Header
+        drawRoundedRect(x, y, right, y + headerHeight, 5f, panelHeaderBg, null, 0f)
+        drawHorizontalLine(x, right, y + headerHeight, 2f, panelHeaderBorder)
+
+        font.draw(category.tag.asPlainText()) {
+            horizontalAnchor = HorizontalAnchor.CENTER
+            this.x = x + panelWidth / 2f
+            this.y = y + (headerHeight - font.height * vanillaScale) / 2f
+            scale = vanillaScale * 0.9f
+        }
+
+        // Expand toggle (plus icon that rotates 90 deg).
+        val plusCX = right - 22f
+        val plusCY = y + headerHeight / 2f
+        val spinDegrees = expandIconAnim[category]!!.value
+        drawQuad(plusCX - 5f, plusCY - spinDegrees * 5f, plusCX + 5f, plusCY + spinDegrees * 5f, textColor.with(a = 220))
+        drawQuad(plusCX - spinDegrees * 5f, plusCY - 1f, plusCX + spinDegrees * 5f, plusCY + 1f, textColor.with(a = 220))
+
+        // Header body = draggable (no action); the plus button toggles the panel.
+        regions += Region(x, y, right - 44f, y + headerHeight, null)
+        regions += Region(right - 44f, y, right, y + headerHeight, Action.TogglePanel(category))
+
+        // Body (animated max-height ~ Panel.svelte transition max-height 300ms ease)
+        val bodyProgress = panelBodyAnim[category]!!.value
+        if (bodyProgress <= 0.01f) {
+            return
+        }
+        val bodyTop = y + headerHeight
+        val bodyMaxHeight = panelMaxBodyHeight * bodyProgress
+        val bodyBottom = bodyTop + bodyMaxHeight
+        drawQuad(x, bodyTop, right, bodyBottom, panelBodyBg)
+
+        scissorStack.withPush(getBounds(x, bodyTop, panelWidth, bodyMaxHeight)) {
+            var curY = bodyTop + 8f - config.scroll
+            for (module in modulesFor(category)) {
+                curY = renderModule(category, module, x, curY, right, mx, my)
+                if (curY > bodyBottom + 60f) {
+                    break
+                }
+            }
+        }
+
+        if (config.scroll > 0f) {
+            drawVerticalLine(right - 2f, bodyTop + 2f, bodyBottom - 2f, 2f, textColor.with(a = 36))
+        }
+        regions += Region(x, bodyTop, right, bodyBottom, null)
+    }
+
+    private fun GuiGraphicsExtractor.renderModule(category: ModuleCategory, module: ClientModule, x: Float, y: Float, panelRight: Float, mx: Float, my: Float): Float {
+        val rowBottom = y + moduleRowHeight
         val hover = mx >= x && mx <= panelRight && my >= y && my <= rowBottom
 
         if (hover) {
-            drawQuad(x, y, panelRight, rowBottom, rowHoverBg)
+            drawQuad(x, y, panelRight, rowBottom, moduleHoverBg)
         }
-
-        val isEnabled = module.enabled
 
         font.draw(module.name.asPlainText()) {
             horizontalAnchor = HorizontalAnchor.CENTER
             this.x = (x + panelRight) / 2f
-            this.y = y + (rowHeight - font.height * vanilla) / 2f
-            scale = vanilla
+            this.y = y + (moduleRowHeight - font.height * vanillaScale) / 2f
+            scale = vanillaScale
         }
 
-        // left toggle region
-        regions += Region(x, y, panelRight - 40f, rowBottom, Action.ToggleModule(module))
-
+        // Expand settings gear (right; its click does not toggle the module).
         if (module.containedValues.any(::isRelevantSetting)) {
-            val isExpanded = module.name in expandedModules
-            val chevY = y + rowHeight / 2f
-            if (isExpanded) {
-                drawTriangle(panelRight - 36f, chevY - 3f, panelRight - 16f, chevY - 3f, panelRight - 26f, chevY + 3f, Color4b.WHITE.with(a = 170))
-            } else {
-                drawTriangle(panelRight - 36f, chevY - 3f, panelRight - 36f, chevY + 3f, panelRight - 26f, chevY, Color4b.WHITE.with(a = 170))
-            }
-            regions += Region(panelRight - 44f, y, panelRight, rowBottom, Action.ExpandModule(module))
+            drawSettingsGear(panelRight - 24f, y + moduleRowHeight / 2f, isExpanded = module.name in expandedModules)
+            regions += Region(panelRight - 48f, y, panelRight, rowBottom, Action.ExpandModule(module))
         }
+
+        regions += Region(x, y, panelRight - 48f, rowBottom, Action.ToggleModule(module))
 
         var nextY = rowBottom
-
         if (module.name in expandedModules) {
-            nextY = renderSettings(module, x, nextY, panelRight, module.containedValues.toList(), 0)
+            nextY = renderSettings(category, module, x, nextY, panelRight, module.containedValues.toList(), 0)
+            drawQuad(x, rowBottom, rightSettingsEdge(panelRight), nextY, moduleSettingsBg)
+            drawVerticalLine(x, nextY, nextY, 0f, Color4b.TRANSPARENT)
+            drawQuad(x, rowBottom, x + 4f, nextY, accent)
         }
-
         return nextY
+    }
+
+    private fun rightSettingsEdge(panelRight: Float): Float = panelRight
+
+    private fun GuiGraphicsExtractor.drawSettingsGear(cx: Float, cy: Float, isExpanded: Boolean) {
+        val c = if (isExpanded) textColor else textDimmed.with(a = 128)
+        drawQuad(cx - 3f, cy - 1f, cx + 3f, cy + 1f, c)
+        drawQuad(cx - 1f, cy - 3f, cx + 1f, cy + 3f, c)
     }
 
     private fun isRelevantSetting(value: Value<*>): Boolean = value.name !in setOf("Enabled", "Hidden", "Bind")
 
     private fun GuiGraphicsExtractor.renderSettings(
+        category: ModuleCategory,
         module: ClientModule,
         x: Float,
         y: Float,
@@ -338,12 +457,13 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
             if (!isRelevantSetting(value)) {
                 continue
             }
-            curY = renderSetting(module, value, x, curY, panelRight, depth)
+            curY = renderSetting(category, module, value, x, curY, panelRight, depth)
         }
         return curY
     }
 
     private fun GuiGraphicsExtractor.renderSetting(
+        category: ModuleCategory,
         module: ClientModule,
         value: Value<*>,
         x: Float,
@@ -351,103 +471,97 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         panelRight: Float,
         depth: Int,
     ): Float {
-        val indent = x + 6f + depth * 12f
+        val indent = x + 7f + depth * 12f
         val rowBottom = y + settingRowHeight
 
         when (value) {
             is ToggleableValueGroup -> {
-                drawQuad(x, y, panelRight, rowBottom, settingsBg)
-                val outerEnabled = value.enabled
+                drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                    scale = vanilla * 0.9f
+                    this.y = y + 8f
+                    scale = vanillaScale * 0.85f
                 }
-                drawSwitch(panelRight - 42f, y + settingRowHeight / 2f, outerEnabled)
+                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f, value.enabled)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleGroup(value))
-
-                var nextY = rowBottom
-                val groupKey = "${module.name}/${value.name}"
-                if (outerEnabled && groupKey in expandedGroups) {
-                    nextY = renderSettings(module, x, nextY, panelRight, value.containedValues.toList(), depth + 1)
+                if (value.enabled) {
+                    return renderSettings(category, module, x, rowBottom, panelRight, value.containedValues.toList(), depth + 1)
                 }
-                return nextY
+                return rowBottom
             }
 
             is ModeValueGroup<*> -> {
-                drawQuad(x, y, panelRight, rowBottom, settingsBg)
+                drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                    scale = vanilla * 0.9f
+                    this.y = y + 8f
+                    scale = vanillaScale * 0.85f
                 }
-                val cur = value.activeMode.name
-                font.draw(cur.asPlainText()) {
+                font.draw(value.activeMode.name.asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    this.x = panelRight - 12f
-                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                    scale = vanilla * 0.8f
+                    this.x = panelRight - 14f
+                    this.y = y + 8f
+                    scale = vanillaScale * 0.75f
                 }
-                drawModeChevron(panelRight - 40f, y + settingRowHeight / 2f)
-                regions += Region(panelRight - 60f, y, panelRight, rowBottom, Action.CycleMode(value))
+                regions += Region(panelRight - 48f, y, panelRight, rowBottom, Action.CycleMode(value))
                 return rowBottom
             }
         }
 
         return when (value.valueType) {
             ValueType.BOOLEAN -> {
-                drawQuad(x, y, panelRight, rowBottom, settingsBg)
-                val cur = value.get() as Boolean
+                drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
+                @Suppress("UNCHECKED_CAST")
+                val cur = (value as Value<Boolean>).get()
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                    scale = vanilla * 0.9f
+                    this.y = y + 8f
+                    scale = vanillaScale * 0.85f
                 }
-                drawSwitch(panelRight - 42f, y + settingRowHeight / 2f, cur)
+                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f, cur)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleBool(value))
                 rowBottom
             }
 
             ValueType.FLOAT, ValueType.INT -> {
-                drawQuad(x, y, panelRight, rowBottom, settingsBg)
+                drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + 3f
-                    scale = vanilla * 0.85f
+                    this.y = y + 2f
+                    scale = vanillaScale * 0.8f
                 }
                 font.draw(formatScalar(value).asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    this.x = panelRight - 12f
-                    this.y = y + 3f
-                    scale = vanilla * 0.8f
+                    this.x = panelRight - 14f
+                    this.y = y + 2f
+                    scale = vanillaScale * 0.75f
                 }
-                // slider
                 val trackX1 = indent
-                val trackX2 = panelRight - 12f
+                val trackX2 = panelRight - 14f
                 val trackY = y + settingRowHeight - 9f
                 drawQuad(trackX1, trackY, trackX2, trackY + 3f, sliderTrack)
                 val ratio = scalarRatio(value).coerceIn(0f, 1f)
                 val fillX2 = trackX1 + (trackX2 - trackX1) * ratio
                 drawQuad(trackX1, trackY, fillX2, trackY + 3f, sliderFill)
-                drawCircleHandle(fillX2, trackY + 1.5f)
-                regions += Region(trackX1, trackY - 3f, trackX2, trackY + 6f, Action.StartSlider(value, trackX1, trackX2))
+                drawQuad(fillX2 - 3f, trackY - 2f, fillX2 + 3f, trackY + 5f, sliderFill)
+                regions += Region(trackX1, trackY - 4f, trackX2, trackY + 7f, Action.StartSlider(value, trackX1, trackX2))
                 rowBottom
             }
 
             else -> {
-                drawQuad(x, y, panelRight, rowBottom, settingsBg)
+                drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                    scale = vanilla * 0.9f
+                    this.y = y + 8f
+                    scale = vanillaScale * 0.85f
                 }
                 val display = displayValue(value)
                 if (display.isNotBlank()) {
                     font.draw(display.asPlainText()) {
                         horizontalAnchor = HorizontalAnchor.END
-                        this.x = panelRight - 12f
-                        this.y = y + (settingRowHeight - font.height * vanilla) / 2f
-                        scale = vanilla * 0.8f
+                        this.x = panelRight - 14f
+                        this.y = y + 8f
+                        scale = vanillaScale * 0.75f
                     }
                 }
                 rowBottom
@@ -457,150 +571,248 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
 
     // ---- Widgets ----
 
-    private fun GuiGraphicsExtractor.drawSwitch(centerX: Float, centerY: Float, on: Boolean) {
-        val width = 30f
-        val height = 17f
-        val track = if (on) accent else sliderTrack
-        drawRoundedRect(centerX, centerY - height / 2f, centerX + width, centerY + height / 2f, height / 2f, track, null, 0f)
-        val thumb = if (on) centerX + width - 9f else centerX + 6f
-        drawCircleHandle(thumb, centerY, radius = 5.5f, color = if (on) Color4b.WHITE else Color4b.fromHex("#c9cdd4"))
-    }
-
-    private fun GuiGraphicsExtractor.drawModeChevron(x: Float, y: Float) {
-        drawTriangle(x, y - 3f, x + 9f, y - 3f, x + 9f, y + 3f, Color4b.GRAY.with(a = 180))
-    }
-
-    private fun GuiGraphicsExtractor.drawCircleHandle(cx: Float, cy: Float, radius: Float = 4f, color: Color4b = Color4b.WHITE) {
-        val r = radius
-        drawTriangle(cx - r, cy, cx, cy - r, cx + r, cy, color)
-        drawTriangle(cx - r, cy, cx, cy + r, cx + r, cy, color)
+    private fun GuiGraphicsExtractor.drawSwitch(key: String, centerX: Float, centerY: Float, on: Boolean) {
+        val w = 22f
+        val h = 12f
+        switchAnim.getOrPut(key) { Animated(7f) }
+        val progress = switchAnim[key]!!.value
+        val trackColor = switchTrack.interpolateTo(switchTrackActive, progress)
+        drawQuad(centerX, centerY - 4f, centerX + w, centerY + 4f, trackColor)
+        val thumb = switchThumb.interpolateTo(switchThumbActive, progress)
+        val thumbCX = centerX + 6f + (w - 12f) * progress
+        drawQuad(thumbCX - 6f, centerY - 6f, thumbCX + 6f, centerY + 6f, thumb)
     }
 
     // ================= Input =================
 
-    /**
-     * Converts a possibly-physical (unscaled) mouse coordinate to GUI scaled space.
-     * Android devices report raw pixel positions for pointer events while [regions]
-     * are laid out in `guiScaled` coordinates, so we normalise before hit-testing.
-     */
-    private val guiScaleX: Float
-        get() = mc.window.screenWidth.toFloat() / mc.window.guiScaledWidth.toFloat()
-    private val guiScaleY: Float
-        get() = mc.window.screenHeight.toFloat() / mc.window.guiScaledHeight.toFloat()
+    private fun executeAction(action: Action?) {
+        when (action) {
+            is Action.TogglePanel -> panels[action.category]?.let { it.expanded = !it.expanded }
+            is Action.ToggleModule -> action.module.enabled = !action.module.enabled
+            is Action.ExpandModule -> {
+                val name = action.module.name
+                if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
+            }
+            is Action.ToggleBool -> {
+                @Suppress("UNCHECKED_CAST")
+                (action.value as Value<Boolean>).set(!action.value.get())
+            }
+            is Action.ToggleGroup -> action.value.enabled = !action.value.enabled
+            is Action.CycleMode -> cycleMode(action.group)
+            is Action.StartSlider -> draggingSlider = SliderDrag(action.value, action.x1, action.x2)
+            null -> Unit
+        }
+    }
 
-    /**
-     * Hit-tests a mouse position (possibly physical pixels) against the current
-     * frame's [regions] using both coordinate interpretations, and executes the
-     * matched [Region.action]. [triggered] reports whether anything handled the click.
-     */
-    private fun dispatchAction(x: Double, y: Double): Boolean {
-        val scrollHandledByX = x / guiScaleX
-        val scrollHandledByY = y / guiScaleY
+    // ---- Input (global event stream) ----
+    //
+    // The external web UI is driven by LiquidBounce's global mouse events
+    // (MouseCursorEvent / MouseButtonEvent / MouseScrollEvent). These carry
+    // GUI-scaled coordinates -- the exact space the renderer uses -- and are
+    // proven to work on Android. The native ClickGUI routes its input through
+    // the very same channel, so taps, drags, right-clicks and scroll behave
+    // identically everywhere. Screen.mouseClicked etc. are deliberately not
+    // overridden: on some Android builds that path is unreliable, and using
+    // both would double-trigger toggles.
 
-        // Coordinates may arrive either already-scaled or as physical pixels; try both.
-        for (region in regions) {
-            val hitScaled = region.contains(scrollHandledByX.toFloat(), scrollHandledByY.toFloat()) ||
-                region.contains(x.toFloat(), y.toFloat())
-            if (!hitScaled) {
+    private var pointerX = 0f
+    private var pointerY = 0f
+    private var mouseDown = false
+    private var pressOriginX = 0f
+    private var pressOriginY = 0f
+    private var pendingHeaderPress: ModuleCategory? = null
+    private var pendingRegionAction: Action? = null
+    private val dragThreshold = 12f
+
+    private val cursorHook = handler<MouseCursorEvent> { event ->
+        if (isCurrentScreen()) {
+            updatePointer(event.x.toFloat(), event.y.toFloat())
+        }
+    }
+
+    private val buttonHook = handler<PluginMouseButtonEvent> { event ->
+        if (!isCurrentScreen()) {
+            return@handler
+        }
+        when {
+            event.isPressed && event.isLeftButton -> pressLeft(pointerX, pointerY)
+            event.isReleased && event.isLeftButton -> releaseLeft()
+            event.isPressed && event.isRightButton -> pressRight(pointerX, pointerY)
+        }
+    }
+
+    private val scrollHook = handler<MouseScrollEvent> { event ->
+        if (!isCurrentScreen()) {
+            return@handler
+        }
+        handleScroll(event.vertical.toFloat())
+    }
+
+    private fun isCurrentScreen(): Boolean = mc.gui.screen() === this
+
+    private fun updatePointer(x: Float, y: Float) {
+        pointerX = x
+        pointerY = y
+
+        // A press that moved beyond the threshold becomes a panel drag.
+        if (mouseDown && pendingHeaderPress != null) {
+            val ddx = x - pressOriginX
+            val ddy = y - pressOriginY
+            if (ddx * ddx + ddy * ddy > dragThreshold * dragThreshold) {
+                dragCategory = pendingHeaderPress
+                val config = panels[pendingHeaderPress]
+                if (config != null) {
+                    dragOffset = (pressOriginX - config.left).toDouble() to (pressOriginY - config.top).toDouble()
+                }
+                pendingHeaderPress = null
+                pendingRegionAction = null
+            }
+        }
+
+        if (dragCategory != null && mouseDown) {
+            movePanel(x, y)
+        }
+
+        if (draggingSlider != null) {
+            updateSlider(x)
+        }
+    }
+
+    private fun pressLeft(x: Float, y: Float) {
+        mouseDown = true
+        pendingHeaderPress = null
+        pendingRegionAction = null
+        pressOriginX = x
+        pressOriginY = y
+
+        searchFocused = inSearchBar(x, y)
+
+        // Header press: a tap toggles the panel, a drag moves it.
+        for ((category, config) in panels) {
+            if (x >= config.left && x <= config.left + panelWidth && y >= config.top && y <= config.top + headerHeight) {
+                pendingHeaderPress = category
+                return
+            }
+        }
+
+        // Slider press starts dragging immediately.
+        for (region in regions.asReversed()) {
+            val action = region.action
+            if (action is Action.StartSlider && region.contains(x, y)) {
+                draggingSlider = SliderDrag(action.value, action.x1, action.x2)
+                updateSlider(x)
+                return
+            }
+        }
+
+        // Generic region, topmost wins.
+        for (region in regions.asReversed()) {
+            if (region.contains(x, y)) {
+                pendingRegionAction = region.action
+                break
+            }
+        }
+    }
+
+    private fun releaseLeft() {
+        mouseDown = false
+
+        draggingSlider = null
+        if (dragCategory != null) {
+            dragCategory = null
+            dragOffset = null
+        }
+
+        val pending = pendingHeaderPress
+        if (pending != null) {
+            panels[pending]?.let { it.expanded = !it.expanded }
+            pendingHeaderPress = null
+            return
+        }
+
+        val action = pendingRegionAction
+        if (action != null) {
+            executeAction(action)
+            pendingRegionAction = null
+        }
+    }
+
+    private fun pressRight(x: Float, y: Float) {
+        for (region in regions.asReversed()) {
+            if (region.contains(x, y)) {
+                when (val action = region.action) {
+                    is Action.TogglePanel -> panels[action.category]?.let { it.expanded = !it.expanded }
+                    is Action.ExpandModule -> {
+                        val name = action.module.name
+                        if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
+                    }
+                    else -> Unit
+                }
+                break
+            }
+        }
+    }
+
+    private fun inSearchBar(x: Float, y: Float): Boolean {
+        val w = guiW()
+        val sw = min(600f, w - 20f)
+        val x1 = (w - sw) / 2f
+        val x2 = (w + sw) / 2f
+        return x >= x1 && x <= x2 && y >= 70f && y <= 120f
+    }
+
+    private fun handleScroll(vertical: Float) {
+        for ((_, config) in panels) {
+            if (!config.expanded) {
                 continue
             }
-            when (val action = region.action) {
-                is Action.TogglePanel -> panels[action.category]?.let { it.collapsed = !it.collapsed }
-                is Action.ToggleModule -> action.module.enabled = !action.module.enabled
-                is Action.ExpandModule -> toggleExpanded(action.module)
-                is Action.ToggleBool -> {
-                    @Suppress("UNCHECKED_CAST")
-                    (action.value as Value<Boolean>).set(!action.value.get())
-                }
-                is Action.ToggleGroup -> action.value.enabled = !action.value.enabled
-                is Action.CycleMode -> cycleMode(action.group)
-                is Action.StartSlider -> draggingSlider = SliderDrag(action.value, action.x1, action.x2)
-                null -> Unit
+            val bodyTop = config.top + headerHeight
+            val bodyBottom = bodyTop + panelMaxBodyHeight
+            if (pointerX >= config.left && pointerX <= config.left + panelWidth &&
+                pointerY >= bodyTop && pointerY <= bodyBottom
+            ) {
+                config.scroll = (config.scroll - vertical * 20f).coerceAtLeast(0f)
+                return
             }
-            return true
-        }
-        return false
-    }
-
-    private fun toggleExpanded(module: ClientModule) {
-        val name = module.name
-        if (name in expandedModules) {
-            expandedModules.remove(name)
-        } else {
-            expandedModules.add(name)
         }
     }
 
-    override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
-        if (click.button() != InputConstants.MOUSE_BUTTON_LEFT) {
-            return true
+    private fun movePanel(x: Float, y: Float) {
+        val category = dragCategory ?: return
+        val config = panels[category] ?: return
+        val off = dragOffset ?: return
+        val gridSize = ModuleClickGui.Snapping.snappingGridSize.toFloat()
+        val snap = ModuleClickGui.Snapping.snappingGridEnabled
+        var nl = x - off.first.toFloat()
+        var nt = y - off.second.toFloat()
+        if (snap && gridSize > 0f) {
+            nl = (nl / gridSize).roundToInt() * gridSize
+            nt = (nt / gridSize).roundToInt() * gridSize
         }
-        val mx = click.x
-        val my = click.y
-        val w = mc.window.guiScaledWidth.toFloat()
-        val sw = 360f
-        val searchX1 = (w - sw) / 2f
-        val searchX2 = (w + sw) / 2f
-
-        // The search box is hit-tested in the same dual-space way as the panels.
-        val sxScaled = mx / guiScaleX
-        val syScaled = my / guiScaleY
-        val inSearchH = (sxScaled >= searchX1 && sxScaled <= searchX2) ||
-            (mx >= searchX1.toDouble() && mx <= searchX2.toDouble())
-        val inSearchV =
-            (syScaled >= tabY + 6f && syScaled <= tabY + 42f) ||
-                (my >= (tabY + 6f).toDouble() && my <= (tabY + 42f).toDouble())
-        searchFocused = inSearchH && inSearchV
-        if (searchFocused) {
-            return true
-        }
-
-        dispatchAction(mx, my)
-        return true
+        config.left = nl.coerceAtLeast(0f)
+        config.top = nt.coerceAtLeast(0f)
     }
 
-    override fun mouseDragged(click: MouseButtonEvent, offsetX: Double, offsetY: Double): Boolean {
-        val drag = draggingSlider ?: return false
-        val mx = (click.x / guiScaleX).toFloat()
+    private fun updateSlider(x: Float) {
+        val drag = draggingSlider ?: return
         val span = drag.trackX2 - drag.trackX1
-        if (span <= 0f) {
-            return true
+        if (span > 0f) {
+            applyScalar(drag.value, ((x - drag.trackX1) / span).coerceIn(0f, 1f))
         }
-        val ratio = ((mx - drag.trackX1) / span).coerceIn(0f, 1f)
-        applyScalar(drag.value, ratio)
-        return true
     }
 
-    override fun mouseReleased(click: MouseButtonEvent): Boolean {
-        draggingSlider = null
-        return true
-    }
-
-    override fun mouseMoved(mouseX: Double, mouseY: Double) = Unit
-
-    override fun mouseScrolled(mouseX: Double, mouseY: Double, horizontalAmount: Double, verticalAmount: Double): Boolean {
-        val sx = mouseX / guiScaleX
-        val sy = mouseY / guiScaleY
-        for (panel in panels.values) {
-            val bodyTop = panel.top + headerHeight
-            val bodyBottom = bodyTop + bodyHeight
-            val inPoly = sx >= panel.left && sx <= panel.left + panelWidth && sy >= bodyTop && sy <= bodyBottom
-            val inRaw = mouseX in panel.left.toDouble()..(panel.left + panelWidth).toDouble() &&
-                mouseY >= bodyTop.toDouble() && mouseY <= bodyBottom.toDouble()
-            if (inPoly || inRaw) {
-                panel.scroll = (panel.scroll - verticalAmount.toFloat() * 20f).coerceAtLeast(0f)
-                return true
-            }
-        }
-        return true
-    }
-
-    override fun keyPressed(input: KeyEvent): Boolean {
+    override fun keyPressed(input: net.minecraft.client.input.KeyEvent): Boolean {
         if (searchFocused && input.key == InputConstants.KEY_BACKSPACE && searchText.isNotEmpty()) {
             searchText = searchText.dropLast(1)
+            rebuildSearch()
             return true
         }
         return super.keyPressed(input)
+    }
+
+    override fun removed() {
+        unregister()
+        super.removed()
     }
 
     // ================= Values =================
@@ -624,9 +836,8 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
         val newValue = start + (end - start) * ratio.coerceIn(0f, 1f)
         when (value.valueType) {
             ValueType.INT -> {
-                val intVal = newValue.roundToInt()
                 @Suppress("UNCHECKED_CAST")
-                (value as? Value<Int>)?.set(intVal)
+                (value as? Value<Int>)?.set(newValue.roundToInt())
             }
             else -> {
                 val floatVal = (newValue * 100f).roundToInt() / 100f
@@ -642,8 +853,7 @@ class NativeClickGuiScreen : Screen("Native ClickGUI".asPlainText()) {
             return
         }
         val idx = modes.indexOfFirst { it === group.activeMode }
-        val next = modes[(idx + 1) % modes.size]
-        group.setByString(next.name)
+        group.setByString(modes[(idx + 1) % modes.size].name)
     }
 
     // ---- Display helpers ----
