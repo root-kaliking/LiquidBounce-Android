@@ -29,7 +29,6 @@ import net.ccbluex.liquidbounce.render.engine.font.GlyphPage.Companion.fontRaste
 import java.awt.Font
 import java.awt.font.FontRenderContext
 import java.awt.geom.AffineTransform
-import java.awt.geom.Rectangle2D
 import java.awt.image.BufferedImage
 import java.io.File
 
@@ -94,13 +93,17 @@ class FontFace(
         withContext(Dispatchers.Default) {
             val fontId = synchronized(fontRasterizationLock) {
                 if (isMobileArm64()) {
-                    // On Android/FCL the JVM's "classloader-namespace" and headless AWT state
-                    // make Graphics2D.getFontMetrics() throw (FontDesignMetrics accesses the
-                    // default ScreenDevice). Measure metrics purely through the font + a
-                    // FontRenderContext, which never touch a ScreenDevice. See #8481.
+                    // On Android/FCL the JVM AWT is in an inconsistent headless state that makes
+                    // both Graphics2D.getFontMetrics() and Font.getStringBounds() throw a
+                    // HeadlessException: in JDK they internally go through FontDesignMetrics,
+                    // which accesses the default ScreenDevice (see #8481).
+                    //
+                    // Measure pure geometry via a FontRenderContext + GlyphVector, which never
+                    // touch a ScreenDevice. getLineMetrics() and getVisualBounds() are safe;
+                    // getStringBounds() is NOT.
                     val frc = FontRenderContext(AffineTransform(), true, true)
                     val lineMetrics = font.getLineMetrics("Ag", frc)
-                    val bounds = font.getStringBounds("Ag", frc) as Rectangle2D
+                    val bounds = font.createGlyphVector(frc, "Ag").visualBounds
                     FontId(
                         style,
                         font,
