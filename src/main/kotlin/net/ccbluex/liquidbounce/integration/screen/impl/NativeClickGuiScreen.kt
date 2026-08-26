@@ -168,12 +168,14 @@ class NativeClickGuiScreen : Screen(
     // ---- Hit testing ----
     private sealed interface Action {
         data class TogglePanel(val category: ModuleCategory) : Action
+        data class DragPanel(val category: ModuleCategory) : Action
         data class ToggleModule(val module: ClientModule) : Action
         data class ExpandModule(val module: ClientModule) : Action
         data class ToggleBool(val value: Value<*>) : Action
         data class CycleMode(val group: ModeValueGroup<*>) : Action
         data class StartSlider(val value: Value<*>, val x1: Float, val x2: Float) : Action
         data class ToggleGroup(val value: ToggleableValueGroup) : Action
+        data object SearchBar : Action
     }
 
     private class Region(
@@ -311,7 +313,7 @@ class NativeClickGuiScreen : Screen(
             drawResults(x1, y2, x2)
         }
 
-        regions += Region(x1, y1, x2, y2, null)
+        regions += Region(x1, y1, x2, y2, Action.SearchBar)
     }
 
     private fun GuiGraphicsExtractor.drawResults(x1: Float, y1: Float, x2: Float) {
@@ -369,8 +371,8 @@ class NativeClickGuiScreen : Screen(
         drawQuad(plusCX - 5f, plusCY - spinDegrees * 5f, plusCX + 5f, plusCY + spinDegrees * 5f, textColor.with(a = 220))
         drawQuad(plusCX - spinDegrees * 5f, plusCY - 1f, plusCX + spinDegrees * 5f, plusCY + 1f, textColor.with(a = 220))
 
-        // Header body = draggable (no action); the plus button toggles the panel.
-        regions += Region(x, y, right - 44f, y + headerHeight, null)
+        // Header body = draggable; the plus button on the right toggles the panel.
+        regions += Region(x, y, right - 44f, y + headerHeight, Action.DragPanel(category))
         regions += Region(right - 44f, y, right, y + headerHeight, Action.TogglePanel(category))
 
         // Body (animated max-height ~ Panel.svelte transition max-height 300ms ease)
@@ -383,7 +385,11 @@ class NativeClickGuiScreen : Screen(
         val bodyBottom = bodyTop + bodyMaxHeight
         drawQuad(x, bodyTop, right, bodyBottom, panelBodyBg)
 
-        scissorStack.withPush(getBounds(x, bodyTop, panelWidth, bodyMaxHeight)) {
+        // Body region goes BEFORE the module rows so that rows (added inside the
+        // scissor block) sit on top of it in the regions list and win hit testing.
+        regions += Region(x, bodyTop, right, bodyBottom, null)
+
+        scissorStack.withPush(getBoundsXYWH(x, bodyTop, panelWidth, bodyMaxHeight)) {
             var curY = bodyTop + 8f - config.scroll
             for (module in modulesFor(category)) {
                 curY = renderModule(category, module, x, curY, right, mx, my)
@@ -396,7 +402,6 @@ class NativeClickGuiScreen : Screen(
         if (config.scroll > 0f) {
             drawVerticalLine(right - 2f, bodyTop + 2f, bodyBottom - 2f, 2f, textColor.with(a = 36))
         }
-        regions += Region(x, bodyTop, right, bodyBottom, null)
     }
 
     private fun GuiGraphicsExtractor.renderModule(category: ModuleCategory, module: ClientModule, x: Float, y: Float, panelRight: Float, mx: Float, my: Float): Float {
@@ -597,30 +602,30 @@ class NativeClickGuiScreen : Screen(
             is Action.ToggleGroup -> action.value.enabled = !action.value.enabled
             is Action.CycleMode -> cycleMode(action.group)
             is Action.StartSlider -> draggingSlider = SliderDrag(action.value, action.x1, action.x2)
+            is Action.DragPanel -> Unit
+            is Action.SearchBar -> { searchFocused = true }
             null -> Unit
         }
     }
 
     // ---- Input ----
     //
-    // Input is handled through the vanilla Screen mouse callbacks (the same way
-    // OpenNilore's ClickGUI drives its panels). This is the reliable path on
-    // Android: the renderer lays out in GUI-scaled coordinates, and MC hands the
-    // mouse callbacks the same GUI-scaled space, so hit-testing is direct. We do
-    // NOT use LiquidBounce's global event stream here, because on ARM builds that
-    // channel is not wired up and panels render but never react to input.
+    // All input goes through the vanilla Screen mouse callbacks, and all hit testing
+    // uses the single `regions` list built during rendering -- same approach as
+    // OpenNilore's NewClickGui. Topmost (last drawn) region wins.
     //
-    // 1.21.11 uses event-object signatures for clicks (MouseButtonEvent) and plain
-    // doubles for scroll/move, matching DroneControlScreen in this codebase.
+    // Touch friendly: the drag threshold is generous (24 dp) so a tap doesn't get
+    // misclassified as a drag just because the finger drifts a few pixels.
 
     private var pointerX = 0f
     private var pointerY = 0f
     private var mouseDown = false
     private var pressOriginX = 0f
     private var pressOriginY = 0f
-    private var pendingHeaderPress: ModuleCategory? = null
+    private var pendingDragPanel: ModuleCategory? = null
     private var pendingRegionAction: Action? = null
-    private val dragThreshold = 12f
+    private var isDraggingPanel = false
+    private val dragThreshold = 24f
 
     override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
         val x = click.x.toFloat()
@@ -653,111 +658,128 @@ class NativeClickGuiScreen : Screen(
         pointerX = x
         pointerY = y
 
-        // A press that moved beyond the threshold becomes a panel drag.
-        if (mouseDown && pendingHeaderPress != null) {
+        if (!mouseDown) {
+            return
+        }
+
+        // Panel drag arming: press on header (non-button area), move past threshold
+        // -> enter actual drag mode.  Once we're dragging we never go back to a "click".
+        if (!isDraggingPanel && pendingDragPanel != null) {
             val ddx = x - pressOriginX
             val ddy = y - pressOriginY
             if (ddx * ddx + ddy * ddy > dragThreshold * dragThreshold) {
-                dragCategory = pendingHeaderPress
-                val config = panels[pendingHeaderPress]
+                isDraggingPanel = true
+                dragCategory = pendingDragPanel
+                val config = panels[pendingDragPanel]
                 if (config != null) {
                     dragOffset = (pressOriginX - config.left).toDouble() to (pressOriginY - config.top).toDouble()
                 }
-                pendingHeaderPress = null
                 pendingRegionAction = null
             }
         }
 
-        if (dragCategory != null && mouseDown) {
+        if (isDraggingPanel) {
             movePanel(x, y)
         }
 
         if (draggingSlider != null) {
             updateSlider(x)
         }
+
+        // If the user pressed a regular action button but moved too far, cancel it
+        // so release doesn't fire an unwanted click.
+        if (!isDraggingPanel && pendingRegionAction != null) {
+            val ddx = x - pressOriginX
+            val ddy = y - pressOriginY
+            if (ddx * ddx + ddy * ddy > dragThreshold * dragThreshold) {
+                pendingRegionAction = null
+            }
+        }
     }
 
     private fun pressLeft(x: Float, y: Float) {
         mouseDown = true
-        pendingHeaderPress = null
+        pendingDragPanel = null
         pendingRegionAction = null
+        isDraggingPanel = false
         pressOriginX = x
         pressOriginY = y
 
-        searchFocused = inSearchBar(x, y)
-
-        // Header press: a tap toggles the panel, a drag moves it.
-        for ((category, config) in panels) {
-            if (x >= config.left && x <= config.left + panelWidth && y >= config.top && y <= config.top + headerHeight) {
-                pendingHeaderPress = category
-                return
-            }
-        }
-
-        // Slider press starts dragging immediately.
+        // Topmost region wins.  Null-action regions (panel body background, tabs,
+        // etc.) swallow the click but do nothing -- they don't fall through.
         for (region in regions.asReversed()) {
+            if (!region.contains(x, y)) {
+                continue
+            }
             val action = region.action
-            if (action is Action.StartSlider && region.contains(x, y)) {
-                draggingSlider = SliderDrag(action.value, action.x1, action.x2)
-                updateSlider(x)
+            if (action == null) {
+                // Clicked on a passive area -- consume the press, nothing to do.
                 return
             }
+            when (action) {
+                is Action.DragPanel -> {
+                    pendingDragPanel = action.category
+                }
+                is Action.StartSlider -> {
+                    draggingSlider = SliderDrag(action.value, action.x1, action.x2)
+                    updateSlider(x)
+                }
+                is Action.SearchBar -> {
+                    searchFocused = true
+                }
+                else -> {
+                    pendingRegionAction = action
+                }
+            }
+            return
         }
 
-        // Generic region, topmost wins.
-        for (region in regions.asReversed()) {
-            if (region.contains(x, y)) {
-                pendingRegionAction = region.action
-                break
-            }
-        }
+        // Missed every region -- clicked empty space.
+        searchFocused = false
     }
 
     private fun releaseLeft() {
         mouseDown = false
 
         draggingSlider = null
-        if (dragCategory != null) {
+
+        if (isDraggingPanel) {
+            isDraggingPanel = false
             dragCategory = null
             dragOffset = null
-        }
-
-        val pending = pendingHeaderPress
-        if (pending != null) {
-            panels[pending]?.let { it.expanded = !it.expanded }
-            pendingHeaderPress = null
+            pendingDragPanel = null
             return
         }
 
+        pendingDragPanel = null
+
         val action = pendingRegionAction
+        pendingRegionAction = null
         if (action != null) {
             executeAction(action)
-            pendingRegionAction = null
         }
     }
 
     private fun pressRight(x: Float, y: Float) {
         for (region in regions.asReversed()) {
-            if (region.contains(x, y)) {
-                when (val action = region.action) {
-                    is Action.TogglePanel -> panels[action.category]?.let { it.expanded = !it.expanded }
-                    is Action.ExpandModule -> {
-                        val name = action.module.name
-                        if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
-                    }
-                    else -> Unit
-                }
-                break
+            if (!region.contains(x, y)) {
+                continue
             }
+            when (val action = region.action) {
+                is Action.TogglePanel -> panels[action.category]?.let { it.expanded = !it.expanded }
+                is Action.ExpandModule -> {
+                    val name = action.module.name
+                    if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
+                }
+                is Action.ToggleModule -> {
+                    // Right-click a module row = expand its settings (same as gear).
+                    val name = action.module.name
+                    if (name in expandedModules) expandedModules.remove(name) else expandedModules.add(name)
+                }
+                else -> Unit
+            }
+            break
         }
-    }
-
-    private fun inSearchBar(x: Float, y: Float): Boolean {
-        val w = guiW()
-        val sw = min(600f, w - 20f)
-        val x1 = (w - sw) / 2f
-        val x2 = (w + sw) / 2f
-        return x >= x1 && x <= x2 && y >= 70f && y <= 120f
     }
 
     private fun handleScroll(vertical: Float) {
