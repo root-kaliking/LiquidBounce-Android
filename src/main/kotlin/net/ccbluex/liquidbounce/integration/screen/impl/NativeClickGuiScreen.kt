@@ -389,7 +389,7 @@ class NativeClickGuiScreen : Screen(
         // scissor block) sit on top of it in the regions list and win hit testing.
         regions += Region(x, bodyTop, right, bodyBottom, null)
 
-        scissorStack.withPush(getBoundsXYWH(x, bodyTop, panelWidth, bodyMaxHeight)) {
+        scissorStack.withPush(getBounds(x, bodyTop, right, bodyBottom)) {
             var curY = bodyTop + 8f - config.scroll
             for (module in modulesFor(category)) {
                 curY = renderModule(category, module, x, curY, right, mx, my)
