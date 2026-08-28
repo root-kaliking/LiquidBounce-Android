@@ -103,11 +103,29 @@ class NativeClickGuiScreen : Screen(
     private val sliderFill = accent
 
     // ---- Layout (from the Svelte source) ----
-    private val panelWidth = 250f
-    private val headerHeight = 38f
-    private val moduleRowHeight = 34f
-    private val settingRowHeight = 30f
-    private val panelMaxBodyHeight = 545f
+    // Scaled to 60% of desktop size for mobile / tablet screens to avoid crowding.
+    private val uiScale = 0.6f
+    private val panelWidth = 250f * uiScale
+    private val headerHeight = 38f * uiScale
+    private val moduleRowHeight = 34f * uiScale
+    private val settingRowHeight = 30f * uiScale
+    private val panelMaxBodyHeight = 545f * uiScale
+    private val panelHeaderRadius = 5f * uiScale
+    private val panelShadowPad = 6f * uiScale
+    private val panelBorderWidth = 2f * uiScale
+    private val plusButtonSize = 44f * uiScale
+    private val plusIconHalf = 5f * uiScale
+    private val settingIndentBase = 7f * uiScale
+    private val settingIndentPerDepth = 12f * uiScale
+    private val settingTextPad = 8f * uiScale
+    private val bodyPadTop = 8f * uiScale
+    private val switchWidth = 22f * uiScale
+    private val switchHeight = 12f * uiScale
+    private val gearSize = 24f * uiScale
+    private val expandButtonWidth = 48f * uiScale
+    private val switchRightPad = 38f * uiScale
+    private val sliderRightPad = 14f * uiScale
+    private val dragThreshold = 24f * uiScale
 
     private val font = FontManager.FONT_RENDERER
     private val vanillaScale = font.scaleToVanillaFont
@@ -229,8 +247,14 @@ class NativeClickGuiScreen : Screen(
         val valueName = key.substringAfter('#')
         val module = ModuleManager.getModuleByName(name) ?: return false
         val value = module.containedValues.find { it.name == valueName } ?: return false
-        @Suppress("UNCHECKED_CAST")
-        return (value as? Value<Boolean>)?.get() ?: (value is ToggleableValueGroup && value.enabled)
+        return when {
+            value.valueType == ValueType.BOOLEAN -> {
+                @Suppress("UNCHECKED_CAST")
+                (value as Value<Boolean>).get()
+            }
+            value is ToggleableValueGroup -> value.enabled
+            else -> false
+        }
     }
 
     private fun ensurePanels() {
@@ -240,7 +264,7 @@ class NativeClickGuiScreen : Screen(
         ModuleCategories.entries
             .filter { it.tag != "ClickGUI" }
             .forEachIndexed { index, category ->
-                panels[category] = PanelConfig(left = 20f, top = (index * 50 + 20).toFloat(), expanded = false)
+                panels[category] = PanelConfig(left = 20f * uiScale, top = index * 50f * uiScale + 20f * uiScale, expanded = false)
                 panelBodyAnim[category] = Animated(6f)
                 expandIconAnim[category] = Animated(5f)
             }
@@ -292,19 +316,19 @@ class NativeClickGuiScreen : Screen(
 
     private fun GuiGraphicsExtractor.renderSearch(w: Float) {
         val hasResults = searchResults.isNotEmpty() || searchFocused
-        val sw = min(600f, w - 20f)
+        val sw = min(600f * uiScale, w - 20f * uiScale)
         val x1 = (w - sw) / 2f
         val x2 = (w + sw) / 2f
-        val y1 = 70f
-        val y2 = y1 + 50f
+        val y1 = 70f * uiScale
+        val y2 = y1 + 50f * uiScale
 
-        val radius = if (hasResults) 10f else 30f
+        val radius = if (hasResults) 10f * uiScale else 30f * uiScale
         drawRoundedRect(x1, y1, x2, y2, radius, searchBg, null, 0f)
 
         val placeholder = searchText.isEmpty()
         font.draw((if (placeholder) "Search" else searchText).asPlainText()) {
-            this.x = x1 + 25f
-            this.y = y1 + (50f - font.height * vanillaScale) / 2f
+            this.x = x1 + 25f * uiScale
+            this.y = y1 + (50f * uiScale - font.height * vanillaScale) / 2f
             scale = vanillaScale
         }
 
@@ -317,25 +341,25 @@ class NativeClickGuiScreen : Screen(
     }
 
     private fun GuiGraphicsExtractor.drawResults(x1: Float, y1: Float, x2: Float) {
-        val listHeight = 250f
+        val listHeight = 250f * uiScale
         drawQuad(x1, y1, x2, y1 + listHeight, searchBg)
         if (searchResults.isEmpty()) {
             font.draw("No modules found".asPlainText()) {
-                this.x = x1 + 25f
-                this.y = y1 + 7f
+                this.x = x1 + 25f * uiScale
+                this.y = y1 + 7f * uiScale
                 scale = vanillaScale
             }
             return
         }
-        var y = y1 + 5f
-        val lineH = 30f
+        var y = y1 + 5f * uiScale
+        val lineH = 30f * uiScale
         for (module in searchResults) {
             if (y + lineH > y1 + listHeight) {
                 break
             }
             font.draw(module.name.asPlainText()) {
-                this.x = x1 + 25f
-                this.y = y + 7f
+                this.x = x1 + 25f * uiScale
+                this.y = y + 7f * uiScale
                 scale = vanillaScale
             }
             regions += Region(x1, y, x2, y + lineH, Action.ToggleModule(module))
@@ -351,11 +375,11 @@ class NativeClickGuiScreen : Screen(
         val right = x + panelWidth
 
         // Soft shadow rim (approximates box-shadow 0 0 10px).
-        drawQuad(x - 6f, y - 6f, right + 6f, y + headerHeight + 6f + panelBodyAnim[category]!!.value * panelMaxBodyHeight, panelShadow.with(a = 40))
+        drawQuad(x - panelShadowPad, y - panelShadowPad, right + panelShadowPad, y + headerHeight + panelShadowPad + panelBodyAnim[category]!!.value * panelMaxBodyHeight, panelShadow.with(a = 40))
 
         // Header
-        drawRoundedRect(x, y, right, y + headerHeight, 5f, panelHeaderBg, null, 0f)
-        drawHorizontalLine(x, right, y + headerHeight, 2f, panelHeaderBorder)
+        drawRoundedRect(x, y, right, y + headerHeight, panelHeaderRadius, panelHeaderBg, null, 0f)
+        drawHorizontalLine(x, right, y + headerHeight, panelBorderWidth, panelHeaderBorder)
 
         font.draw(category.tag.asPlainText()) {
             horizontalAnchor = HorizontalAnchor.CENTER
@@ -365,15 +389,15 @@ class NativeClickGuiScreen : Screen(
         }
 
         // Expand toggle (plus icon that rotates 90 deg).
-        val plusCX = right - 22f
+        val plusCX = right - plusButtonSize / 2f
         val plusCY = y + headerHeight / 2f
         val spinDegrees = expandIconAnim[category]!!.value
-        drawQuad(plusCX - 5f, plusCY - spinDegrees * 5f, plusCX + 5f, plusCY + spinDegrees * 5f, textColor.with(a = 220))
-        drawQuad(plusCX - spinDegrees * 5f, plusCY - 1f, plusCX + spinDegrees * 5f, plusCY + 1f, textColor.with(a = 220))
+        drawQuad(plusCX - plusIconHalf, plusCY - spinDegrees * plusIconHalf, plusCX + plusIconHalf, plusCY + spinDegrees * plusIconHalf, textColor.with(a = 220))
+        drawQuad(plusCX - spinDegrees * plusIconHalf, plusCY - 1f, plusCX + spinDegrees * plusIconHalf, plusCY + 1f, textColor.with(a = 220))
 
         // Header body = draggable; the plus button on the right toggles the panel.
-        regions += Region(x, y, right - 44f, y + headerHeight, Action.DragPanel(category))
-        regions += Region(right - 44f, y, right, y + headerHeight, Action.TogglePanel(category))
+        regions += Region(x, y, right - plusButtonSize, y + headerHeight, Action.DragPanel(category))
+        regions += Region(right - plusButtonSize, y, right, y + headerHeight, Action.TogglePanel(category))
 
         // Body (animated max-height ~ Panel.svelte transition max-height 300ms ease)
         val bodyProgress = panelBodyAnim[category]!!.value
@@ -390,7 +414,7 @@ class NativeClickGuiScreen : Screen(
         regions += Region(x, bodyTop, right, bodyBottom, null)
 
         scissorStack.withPush(getBounds(x, bodyTop, right, bodyBottom)) {
-            var curY = bodyTop + 8f - config.scroll
+            var curY = bodyTop + bodyPadTop - config.scroll
             for (module in modulesFor(category)) {
                 curY = renderModule(category, module, x, curY, right, mx, my)
                 if (curY > bodyBottom + 60f) {
@@ -421,11 +445,11 @@ class NativeClickGuiScreen : Screen(
 
         // Expand settings gear (right; its click does not toggle the module).
         if (module.containedValues.any(::isRelevantSetting)) {
-            drawSettingsGear(panelRight - 24f, y + moduleRowHeight / 2f, isExpanded = module.name in expandedModules)
-            regions += Region(panelRight - 48f, y, panelRight, rowBottom, Action.ExpandModule(module))
+            drawSettingsGear(panelRight - gearSize, y + moduleRowHeight / 2f, isExpanded = module.name in expandedModules)
+            regions += Region(panelRight - expandButtonWidth, y, panelRight, rowBottom, Action.ExpandModule(module))
         }
 
-        regions += Region(x, y, panelRight - 48f, rowBottom, Action.ToggleModule(module))
+        regions += Region(x, y, panelRight - expandButtonWidth, rowBottom, Action.ToggleModule(module))
 
         var nextY = rowBottom
         if (module.name in expandedModules) {
@@ -475,7 +499,7 @@ class NativeClickGuiScreen : Screen(
         panelRight: Float,
         depth: Int,
     ): Float {
-        val indent = x + 7f + depth * 12f
+        val indent = x + settingIndentBase + depth * settingIndentPerDepth
         val rowBottom = y + settingRowHeight
 
         when (value) {
@@ -483,10 +507,10 @@ class NativeClickGuiScreen : Screen(
                 drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + 8f
+                    this.y = y + settingTextPad
                     scale = vanillaScale * 0.85f
                 }
-                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f)
+                drawSwitch("${module.name}#${value.name}", panelRight - switchRightPad, y + settingRowHeight / 2f)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleGroup(value))
                 if (value.enabled) {
                     return renderSettings(category, module, x, rowBottom, panelRight, value.containedValues.toList(), depth + 1)
@@ -498,13 +522,13 @@ class NativeClickGuiScreen : Screen(
                 drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + 8f
+                    this.y = y + settingTextPad
                     scale = vanillaScale * 0.85f
                 }
                 font.draw(value.activeMode.name.asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    this.x = panelRight - 14f
-                    this.y = y + 8f
+                    this.x = panelRight - sliderRightPad
+                    this.y = y + settingTextPad
                     scale = vanillaScale * 0.75f
                 }
                 regions += Region(panelRight - 48f, y, panelRight, rowBottom, Action.CycleMode(value))
@@ -517,10 +541,10 @@ class NativeClickGuiScreen : Screen(
                 drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + 8f
+                    this.y = y + settingTextPad
                     scale = vanillaScale * 0.85f
                 }
-                drawSwitch("${module.name}#${value.name}", panelRight - 38f, y + settingRowHeight / 2f)
+                drawSwitch("${module.name}#${value.name}", panelRight - switchRightPad, y + settingRowHeight / 2f)
                 regions += Region(x, y, panelRight, rowBottom, Action.ToggleBool(value))
                 rowBottom
             }
@@ -534,12 +558,12 @@ class NativeClickGuiScreen : Screen(
                 }
                 font.draw(formatScalar(value).asPlainText()) {
                     horizontalAnchor = HorizontalAnchor.END
-                    this.x = panelRight - 14f
+                    this.x = panelRight - sliderRightPad
                     this.y = y + 2f
                     scale = vanillaScale * 0.75f
                 }
                 val trackX1 = indent
-                val trackX2 = panelRight - 14f
+                val trackX2 = panelRight - sliderRightPad
                 val trackY = y + settingRowHeight - 9f
                 drawQuad(trackX1, trackY, trackX2, trackY + 3f, sliderTrack)
                 val ratio = scalarRatio(value).coerceIn(0f, 1f)
@@ -554,15 +578,15 @@ class NativeClickGuiScreen : Screen(
                 drawQuad(x, y, panelRight, rowBottom, moduleSettingsBg)
                 font.draw(value.name.asPlainText()) {
                     this.x = indent
-                    this.y = y + 8f
+                    this.y = y + settingTextPad
                     scale = vanillaScale * 0.85f
                 }
                 val display = displayValue(value)
                 if (display.isNotBlank()) {
                     font.draw(display.asPlainText()) {
                         horizontalAnchor = HorizontalAnchor.END
-                        this.x = panelRight - 14f
-                        this.y = y + 8f
+                        this.x = panelRight - sliderRightPad
+                        this.y = y + settingTextPad
                         scale = vanillaScale * 0.75f
                     }
                 }
@@ -574,8 +598,8 @@ class NativeClickGuiScreen : Screen(
     // ---- Widgets ----
 
     private fun GuiGraphicsExtractor.drawSwitch(key: String, centerX: Float, centerY: Float) {
-        val w = 22f
-        val h = 12f
+        val w = switchWidth
+        val h = switchHeight
         switchAnim.getOrPut(key) { Animated(7f) }
         val progress = switchAnim[key]!!.value
         val trackColor = switchTrack.interpolateTo(switchTrackActive, progress.toDouble())
@@ -625,7 +649,6 @@ class NativeClickGuiScreen : Screen(
     private var pendingDragPanel: ModuleCategory? = null
     private var pendingRegionAction: Action? = null
     private var isDraggingPanel = false
-    private val dragThreshold = 24f
 
     override fun mouseClicked(click: MouseButtonEvent, doubled: Boolean): Boolean {
         val x = click.x.toFloat()
@@ -635,6 +658,11 @@ class NativeClickGuiScreen : Screen(
         } else {
             pressLeft(x, y)
         }
+        return true
+    }
+
+    override fun mouseDragged(click: MouseButtonEvent, offsetX: Double, offsetY: Double): Boolean {
+        updatePointer(click.x.toFloat(), click.y.toFloat())
         return true
     }
 
